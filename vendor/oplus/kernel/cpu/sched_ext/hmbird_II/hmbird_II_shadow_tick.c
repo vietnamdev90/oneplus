@@ -128,7 +128,7 @@ static void scheduler_tick_handler(void *unused, struct rq *rq)
 	start_shadow_tick_timer();
 
 	if (unlikely(hmbird_debug & HMBIRD_DEBUG_SYSTRACE)) {
-		if (__sync_val_compare_and_swap(&in_output, 0, 1)) {
+		if (cmpxchg(&in_output, 0, 1)) {
 			goto skip_systrace;
 		}
 		if (time_before(jiffies, next_systrace_jiff)) {
