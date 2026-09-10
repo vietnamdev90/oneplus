@@ -4,6 +4,7 @@
 
 config RMNET_CORE
 	default m
+	tristate "Qualcomm RMNET Core Driver"
 	depends on RMNET_MEM
 	select GRO_CELLS
 	help
@@ -14,6 +15,7 @@ config RMNET_CORE
 
 config RMNET_CTL
 	default m
+	tristate "RMNET CTL"
 	help
 	  Enable the RMNET CTL module which is used for handling QMAP commands
 	  for flow control purposes.

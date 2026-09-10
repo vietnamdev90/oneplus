@@ -1,5 +1,6 @@
 load("@rules_pkg//pkg:install.bzl", "pkg_install")
 load("@rules_pkg//pkg:mappings.bzl", "pkg_files", "strip_prefix")
+load("//build/kernel/kleaf:kernel.bzl", "kernel_module_group")
 load(":oplus_modules_define.bzl", "oplus_ddk_get_oplus_features")
 
 def define_oplus_ddk_modules(target, msm_target, variant):
@@ -173,6 +174,32 @@ def define_oplus_ddk_modules(target, msm_target, variant):
             "//vendor/oplus/kernel/dfr:oplus_inject_aw8692x",
             "//vendor/oplus/kernel/dfr:oplus_inject",
         ]
+
+    # Make the Oplus provider closure used by Qualcomm modules available to
+    # kernel_modules_install. Modpost already sees these through declared deps,
+    # but depmod also needs their .ko files in the install tree.
+    kernel_module_group(
+        name = "{}_oplus_depmod_modules".format(target),
+        srcs = [
+            "//vendor/oplus/hardware/radio/mdmrst/bazel:oplus_mdmrst",
+            "//vendor/oplus/kernel/boot:buildvariant",
+            "//vendor/oplus/kernel/boot:oplus_bsp_boot_projectinfo",
+            "//vendor/oplus/kernel/boot:oplus_bsp_bootmode",
+            "//vendor/oplus/kernel/boot:oplus_charger_present",
+            "//vendor/oplus/kernel/boot:oplus_ftm_mode",
+            "//vendor/oplus/kernel/boot:oplusboot",
+            "//vendor/oplus/kernel/charger/bazel:{}_oplus_cfg".format(target),
+            "//vendor/oplus/kernel/charger/bazel:{}_oplus_chg_v2".format(target),
+            "//vendor/oplus/kernel/charger/bazel:{}_test-kit".format(target),
+            "//vendor/oplus/kernel/charger/bazel:{}_ufcs_class".format(target),
+            "//vendor/oplus/kernel/device_info/magtransfer:oplus_magcvr_notify",
+            "//vendor/oplus/kernel/dft/bazel:oplus_bsp_dft_kernel_fb",
+            "//vendor/oplus/kernel/dft/bazel:oplus_bsp_dft_olc",
+            "//vendor/oplus/kernel/multimedia/feedback/bazel:oplus_mm_kevent",
+            "//vendor/oplus/kernel/multimedia/feedback/bazel:oplus_mm_kevent_fb",
+        ],
+        visibility = ["//visibility:public"],
+    )
 
     pkg_files(
         name = "{}_all_oplus_ddk_modules_files".format(target),

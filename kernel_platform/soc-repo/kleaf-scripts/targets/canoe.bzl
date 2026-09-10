@@ -40,8 +40,14 @@ def define_canoe():
             )
 
         else:
-            board_kernel_cmdline_extras += ["nosoftlockup console=ttynull qcom_geni_serial.con_enabled=0"]
-            kernel_vendor_cmdline_extras += ["nosoftlockup console=ttynull qcom_geni_serial.con_enabled=0"]
+            board_kernel_cmdline_extras += [
+                "nosoftlockup console=ttynull qcom_geni_serial.con_enabled=0",
+                "kasan=off page_owner=off schedstats=disable",
+            ]
+            kernel_vendor_cmdline_extras += [
+                "nosoftlockup console=ttynull qcom_geni_serial.con_enabled=0",
+                "kasan=off page_owner=off schedstats=disable",
+            ]
             board_bootconfig_extras += ["androidboot.serialconsole=0"]
 
             perf_build_img_opts = boot_image_opts(
@@ -49,6 +55,7 @@ def define_canoe():
                 kernel_vendor_cmdline_extras = kernel_vendor_cmdline_extras,
                 board_kernel_cmdline_extras = board_kernel_cmdline_extras,
                 board_bootconfig_extras = board_bootconfig_extras,
+                vendor_boot_partition_size = 0x6000000,
             )
 
     define_typical_android_build(

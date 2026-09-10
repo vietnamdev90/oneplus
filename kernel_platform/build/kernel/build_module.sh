@@ -211,6 +211,54 @@ COMMON_DIR="common"
 mkdir -p ${KERNEL_SRC}
 rsync -a "${ROOT_DIR}"/"${COMMON_DIR}"/ "${KERNEL_SRC}"/ || true > /dev/null
 cp -ardf ${ROOT_DIR}/${SOC_DIR}/* ${KERNEL_SRC}/ || true > /dev/null
+cp -f "${KERNEL_KIT}/.config" "${KERNEL_SRC}/.config"
+
+# A DTB build uses the legacy merged source tree.  Its top-level files come
+# from soc-repo and may report a different kernel version than common, so
+# running olddefconfig/modules_prepare here corrupts the Bazel configuration.
+# Reuse the exact generated metadata from the kernel kit instead.
+if [[ "$DTB_COMPILE" == 1 ]]; then
+  if [ ! -e "${KERNEL_KIT}/include/config/auto.conf" ] || \
+     [ ! -e "${KERNEL_KIT}/include/generated/autoconf.h" ]; then
+    echo "ERROR! Missing Bazel-generated configuration headers in ${KERNEL_KIT}/include"
+    echo "Rebuild/copy the kernel platform artifacts before compiling DTBs."
+    exit 1
+  fi
+
+  rm -rf "${KERNEL_SRC}/include/config" "${KERNEL_SRC}/include/generated"
+  cp -a "${KERNEL_KIT}/include/config" "${KERNEL_SRC}/include/config"
+  cp -a "${KERNEL_KIT}/include/generated" "${KERNEL_SRC}/include/generated"
+
+  # auto.conf.cmd from Bazel contains sandbox-specific paths and an
+  # unconditional FORCE dependency.  Keeping it would invoke syncconfig on
+  # the incompatible merged source tree.  The copied auto.conf is already the
+  # authoritative configuration for this build.
+  : > "${KERNEL_SRC}/include/config/auto.conf.cmd"
+  touch "${KERNEL_SRC}/include/config/auto.conf" \
+        "${KERNEL_SRC}/include/config/auto.conf.cmd" \
+        "${KERNEL_SRC}/include/generated/autoconf.h"
+
+  kernel_release=""
+  if [ -s "${KERNEL_KIT}/include/config/kernel.release" ]; then
+    kernel_release=$(cat "${KERNEL_KIT}/include/config/kernel.release")
+  elif [ -s "${KERNEL_KIT}/include/generated/utsrelease.h" ]; then
+    kernel_release=$(sed -n 's/^#define UTS_RELEASE "\(.*\)"$/\1/p' \
+      "${KERNEL_KIT}/include/generated/utsrelease.h")
+  else
+    kernel_module=$(find "${KERNEL_KIT}" -type f -name '*.ko' -print -quit)
+    if [ -n "${kernel_module}" ] && command -v modinfo >/dev/null 2>&1; then
+      kernel_release=$(modinfo -F vermagic "${kernel_module}" | awk '{print $1}')
+    fi
+  fi
+  if [ -z "${kernel_release}" ]; then
+    echo "ERROR! Could not determine kernel release from ${KERNEL_KIT}"
+    exit 1
+  fi
+  printf '%s\n' "${kernel_release}" > \
+    "${KERNEL_SRC}/include/config/kernel.release"
+  printf '#define UTS_RELEASE "%s"\n' "${kernel_release}" > \
+    "${KERNEL_SRC}/include/generated/utsrelease.h"
+fi
 
 if [ ! -e "${OUT_DIR}/Makefile" -o -z "${EXT_MODULES}" ]; then
   echo "========================================================"
@@ -227,38 +275,15 @@ if [ ! -e "${OUT_DIR}/Makefile" -o -z "${EXT_MODULES}" ]; then
     cp -ardf ${KERNEL_KIT}/host ${COMMON_OUT_DIR}
   fi
 
-  # Install .config from kernel platform
-  cp -f ${KERNEL_KIT}/.config ${KERNEL_SRC}/
-  (
-    if [[ "$DTB_COMPILE" == 1 ]];then
-      cd "${KERNEL_SRC}"
-      make O="${KERNEL_SRC}" "${TOOL_ARGS[@]}" ${MAKE_ARGS} olddefconfig
-    fi
-  )
-
-  # To guard against .config silently diverging from the one kernel platform created,
-  # set KCONFIG_NOSILENTUPDATE=1. If doing an incremental build, this also guards against
-  # the kernel platform .config changing since autoconf.h and related files would need an update
-  # in OUT_DIR. To get around this valid change, do "make olddefconfig", copy the .config again,
-  # then do the NOSILENTUPDATE check
+  # Keep the external-module output aligned with the kernel platform config.
   cp -f ${KERNEL_KIT}/.config ${OUT_DIR}/
-  (
-    if [[ "$DTB_COMPILE" == 1 ]];then
-      cd "${KERNEL_SRC}"
-      make O="${KERNEL_SRC}" "${TOOL_ARGS[@]}" KCONFIG=${KERNEL_KIT}/.config ${MAKE_ARGS} modules_prepare
-      if ! d=$(diff -Naurp ${KERNEL_KIT}/.config ${OUT_DIR}/.config); then
-          echo "CONFIG diff between ${KERNEL_KIT}/.config ${OUT_DIR}/.config"
-          echo $d
-      fi
-    fi
-  )
   set +x
 fi
 
 cp -f ${KERNEL_KIT}/.config ${OUT_DIR}/
 # Set KBUILD_MIXED_TREE in case an out-of-tree Makefile does "make all". This causes
 # kbuild to also want to compile vmlinux
-MAKE_ARGS+=" KBUILD_MIXED_TREE=${KERNEL_KIT} KCONFIG=${KERNEL_KIT}/.config"
+MAKE_ARGS+=" ARCH=${ARCH:-arm64} KBUILD_MIXED_TREE=${KERNEL_KIT}"
 
 echo "========================================================"
 echo " Building external modules and installing them into staging directory"

@@ -241,6 +241,9 @@ common_kernel(
     build_gki_artifacts = True,
     ddk_headers_archive = ":kernel_aarch64_ddk_headers_archive",
     ddk_module_headers = [":all_headers_aarch64"],
+    # Accept the checked-in gki_defconfig as-is. Local stock-version changes
+    # intentionally do not have to match Kleaf's generated savedefconfig.
+    check_defconfig = "disabled",
     defconfig = "arch/arm64/configs/gki_defconfig",
     extra_dist = [
         ":test_mappings_zip",
@@ -254,7 +257,13 @@ common_kernel(
     kmi_symbol_list_strict_mode = True,
     make_goals = _GKI_AARCH64_MAKE_GOALS,
     makefile = ":Makefile",
-    module_implicit_outs = get_gki_modules_list("arm64") + get_kunit_modules_list("arm64"),
+    module_implicit_outs = get_gki_modules_list("arm64") + get_kunit_modules_list("arm64") + [
+        # Stock canoe vendor_dlkm contains these generic touchscreen drivers.
+        # Keep them out of the GKI system_dlkm load list; the Oplus packaging
+        # step places them in vendor_dlkm instead.
+        "drivers/input/touchscreen/atmel_mxt_ts.ko",
+        "drivers/input/touchscreen/goodix_ts.ko",
+    ],
     protected_module_names_list = ":gki_aarch64_protected_module_names",
     system_dlkm_extra_archive_files = [":generate_gki_module_info_arm64"],
     trim_nonlisted_kmi = True,

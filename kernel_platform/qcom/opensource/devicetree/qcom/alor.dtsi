@@ -36,7 +36,7 @@
 
 
 	chosen: chosen {
-		bootargs = "loglevel=6 kpti=0 loop.max_part=7 log_buf_len=512K kernel.panic_on_rcu_stall=1 msm_rtb.filter=0x237 rcupdate.rcu_expedited=1 rcu_nocbs=0-7 ftrace_dump_on_oops cpufreq.default_governor=performance printk.console_no_auto_verbose=1 irqaffinity=0-1 swiotlb=0 kasan=off cgroup_disable=pressure cgroup.memory=nokmem,nosocket disable_dma32=on page_poison=on restrict_cma_redirect=false fw_devlink.strict=1 kasan=off can.stats_timer=0 android_arch_task_struct_size=512 pcie_ports=compat sysctl.kernel.sched_pelt_multiplier=4 no-steal-acc pci-msm-drv.pcie_sm_regs=0x1D07000,0x1040,0x1048,0x3000,0x1 androidboot.usbcontroller=a600000.dwc3";
+		bootargs = "loglevel=10 kpti=0 loop.max_part=7 log_buf_len=10MM kernel.panic_on_rcu_stall=1 msm_rtb.filter=0x237 rcupdate.rcu_expedited=1 rcu_nocbs=0-7 ftrace_dump_on_oops cpufreq.default_governor=performance printk.console_no_auto_verbose=1 irqaffinity=0-1 swiotlb=0 kasan=off cgroup_disable=pressure cgroup.memory=nokmem,nosocket disable_dma32=on page_poison=on restrict_cma_redirect=false fw_devlink.strict=1 kasan=off can.stats_timer=0 android_arch_task_struct_size=512 pcie_ports=compat sysctl.kernel.sched_pelt_multiplier=4 no-steal-acc pci-msm-drv.pcie_sm_regs=0x1D07000,0x1040,0x1048,0x3000,0x1 androidboot.usbcontroller=a600000.dwc3";
 		stdout-path = "/soc/qcom,qupv3_1_geni_se@ac0000/qcom,qup_uart@a9c000:115200n8";
 	};
 

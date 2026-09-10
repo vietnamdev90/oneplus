@@ -13,7 +13,7 @@ load(
     "unsparsed_image",
 )
 load(":kleaf-scripts/abl.bzl", "define_abl_dist")
-load(":kleaf-scripts/avb_boot_img.bzl", "avb_sign_boot_image")
+load(":kleaf-scripts/avb_boot_img.bzl", "avb_pad_vendor_boot_image", "avb_sign_boot_image")
 load(":kleaf-scripts/consolidate.bzl", "define_consolidated_kernel")
 load(":kleaf-scripts/dtbs.bzl", "define_qcom_dtbs")
 load(":kleaf-scripts/modules_unprotected.bzl", "get_unprotected_vendor_modules_list")
@@ -146,6 +146,7 @@ def define_single_android_build(
         build_initramfs = True,
         build_dtbo = True,
         build_vendor_dlkm = True,
+        build_vendor_dlkm_flatten = True,
         dedup_dlkm_modules = True,  # removes system_dlkm modules from vendor_dlkm
         modules_list = "modules-lists/modules.list.msm.{}".format(name),
         vendor_dlkm_modules_list = ":{}_vendor_dlkm_modules_list_generated".format(stem),
@@ -170,6 +171,14 @@ def define_single_android_build(
         ],
         boot_partition_size = build_img_opts.boot_partition_size,
     )
+
+    if build_img_opts.vendor_boot_partition_size != None:
+        avb_pad_vendor_boot_image(
+            name = "{}_avb_pad_vendor_boot_image".format(stem),
+            artifacts = ":{}_images".format(stem),
+            avbtool = "//prebuilts/kernel-build-tools:avbtool",
+            partition_size = build_img_opts.vendor_boot_partition_size,
+        )
 
     native.filegroup(
         name = "{}_system_dlkm_image_file".format(stem),
@@ -257,6 +266,9 @@ def define_single_android_build(
         ":{}/{}".format(stem, module)
         for module in modules
     ]
+
+    if build_img_opts.vendor_boot_partition_size != None:
+        dist_data.append("{}_avb_pad_vendor_boot_image".format(stem))
 
     vendor_dlkm_module_unprotected_list = get_unprotected_vendor_modules_list(stem)
     vendor_unprotected_dlkm = " ".join(vendor_dlkm_module_unprotected_list)
