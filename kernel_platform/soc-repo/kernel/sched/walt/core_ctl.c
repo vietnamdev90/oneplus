@@ -11,6 +11,7 @@
 #include <linux/cpumask.h>
 #include <linux/cpufreq.h>
 #include <linux/kthread.h>
+#include <linux/moduleparam.h>
 #include <linux/sched.h>
 #include <linux/sched/rt.h>
 #include <linux/syscore_ops.h>
@@ -98,6 +99,17 @@ static void sysfs_param_changed(struct cluster_data *state);
 static void wake_up_core_ctl_thread(void);
 static bool initialized;
 static bool assist_params_initialized;
+
+/*
+ * core_ctl removes CPUs from scheduler use through the PAUSE_CORE_CTL client.
+ * Blocking only this client leaves PAUSE_THERMAL and the normal thermal
+ * frequency limits intact.  Set sched_walt.performance_unlock=0 at boot (or
+ * module load) to restore stock core_ctl behaviour.
+ */
+static bool performance_unlock = true;
+module_param(performance_unlock, bool, 0444);
+MODULE_PARM_DESC(performance_unlock,
+		 "Keep all CPUs available to the scheduler; thermal pause remains active");
 
 ATOMIC_NOTIFIER_HEAD(core_ctl_notifier);
 static unsigned int last_nr_big;
@@ -293,6 +305,14 @@ static ssize_t store_enable(struct cluster_data *state,
 
 	if (sscanf(buf, "%u\n", &val) != 1)
 		return -EINVAL;
+
+	if (performance_unlock && val) {
+		if (state->enable) {
+			state->enable = false;
+			sysfs_param_changed(state);
+		}
+		return count;
+	}
 
 	bval = !!val;
 	if (bval != state->enable) {

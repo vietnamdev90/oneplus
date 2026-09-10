@@ -8,7 +8,12 @@
 
 #include <trace/hooks/sched.h>
 
+#ifdef CONFIG_ANDROID_AGGRESSIVE_PERFORMANCE
+#define IOWAIT_BOOST_MIN	(SCHED_CAPACITY_SCALE / 4)
+#define ANDROID_PERF_RATE_LIMIT_US	500U
+#else
 #define IOWAIT_BOOST_MIN	(SCHED_CAPACITY_SCALE / 8)
+#endif
 
 struct sugov_tunables {
 	struct gov_attr_set	attr_set;
@@ -787,6 +792,10 @@ static int sugov_init(struct cpufreq_policy *policy)
 	}
 
 	tunables->rate_limit_us = cpufreq_policy_transition_delay_us(policy);
+#ifdef CONFIG_ANDROID_AGGRESSIVE_PERFORMANCE
+	tunables->rate_limit_us = min(tunables->rate_limit_us,
+				      ANDROID_PERF_RATE_LIMIT_US);
+#endif
 
 	policy->governor_data = sg_policy;
 	sg_policy->tunables = tunables;

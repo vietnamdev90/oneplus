@@ -76,6 +76,7 @@ configure specific aspects of kernel behavior to your liking.
    :maxdepth: 1
 
    acpi/index
+   android-aggressive-performance
    aoe/index
    auxdisplay/index
    bcache

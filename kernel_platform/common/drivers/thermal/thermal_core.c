@@ -535,6 +535,12 @@ static void thermal_trip_crossed(struct thermal_zone_device *tz,
 	thermal_governor_trip_crossed(governor, tz, trip, crossed_up);
 }
 
+static bool thermal_trip_is_emergency(const struct thermal_trip *trip)
+{
+	return trip->type == THERMAL_TRIP_HOT ||
+	       trip->type == THERMAL_TRIP_CRITICAL;
+}
+
 static int thermal_trip_notify_cmp(void *not_used, const struct list_head *a,
 				   const struct list_head *b)
 {
@@ -598,14 +604,23 @@ void __thermal_zone_device_update(struct thermal_zone_device *tz,
 	thermal_zone_set_trips(tz, low, high);
 
 	list_sort(NULL, &way_up_list, thermal_trip_notify_cmp);
-	list_for_each_entry(td, &way_up_list, notify_list_node)
+	list_for_each_entry(td, &way_up_list, notify_list_node) {
+		if (IS_ENABLED(CONFIG_ANDROID_THERMAL_EMERGENCY_ONLY) &&
+		    !thermal_trip_is_emergency(&td->trip))
+			continue;
 		thermal_trip_crossed(tz, &td->trip, governor, true);
+	}
 
 	list_sort(NULL, &way_down_list, thermal_trip_notify_cmp);
-	list_for_each_entry_reverse(td, &way_down_list, notify_list_node)
+	list_for_each_entry_reverse(td, &way_down_list, notify_list_node) {
+		if (IS_ENABLED(CONFIG_ANDROID_THERMAL_EMERGENCY_ONLY) &&
+		    !thermal_trip_is_emergency(&td->trip))
+			continue;
 		thermal_trip_crossed(tz, &td->trip, governor, false);
+	}
 
-	if (governor->manage)
+	if (!IS_ENABLED(CONFIG_ANDROID_THERMAL_EMERGENCY_ONLY) &&
+	    governor->manage)
 		governor->manage(tz);
 
 	thermal_debug_update_trip_stats(tz);

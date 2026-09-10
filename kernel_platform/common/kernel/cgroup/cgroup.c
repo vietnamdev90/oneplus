@@ -36,6 +36,7 @@
 #include <linux/init_task.h>
 #include <linux/kernel.h>
 #include <linux/magic.h>
+#include <linux/moduleparam.h>
 #include <linux/mutex.h>
 #include <linux/mount.h>
 #include <linux/pagemap.h>
@@ -101,6 +102,17 @@ EXPORT_SYMBOL_GPL(css_set_lock);
 DEFINE_SPINLOCK(trace_cgroup_path_lock);
 char trace_cgroup_path[TRACE_CGROUP_PATH_LEN];
 static bool cgroup_debug __read_mostly;
+
+/*
+ * Android's cached-app freezer writes 1 to cgroup.freeze.  Keep thaw writes
+ * working so an already-frozen group can always recover, but reject new
+ * freezes when the performance profile is selected.  The stock behaviour can
+ * be restored with oplus_perf_disable_cgroup_freezer=0 on the kernel command
+ * line.
+ */
+static bool oplus_perf_disable_cgroup_freezer __read_mostly = true;
+core_param(oplus_perf_disable_cgroup_freezer,
+	   oplus_perf_disable_cgroup_freezer, bool, 0444);
 
 /*
  * Protects cgroup_idr and css_idr so that IDs can be released without
@@ -4029,6 +4041,9 @@ static ssize_t cgroup_freeze_write(struct kernfs_open_file *of,
 
 	if (freeze < 0 || freeze > 1)
 		return -ERANGE;
+
+	if (freeze && oplus_perf_disable_cgroup_freezer)
+		return -EOPNOTSUPP;
 
 	cgrp = cgroup_kn_lock_live(of->kn, false);
 	if (!cgrp)

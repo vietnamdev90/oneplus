@@ -223,10 +223,15 @@ static struct kernel_param_ops self_activate_ops = {
 module_param_cb(self_activate, &self_activate_ops, NULL, 0664);
 
 static bool enable = true;
+static bool performance_unlock = true;
+module_param(performance_unlock, bool, 0444);
+MODULE_PARM_DESC(performance_unlock,
+		 "Disable cpufreq_bouncing frequency ceilings");
 
 static int enable_show(char *buf, const struct kernel_param *kp)
 {
-	return snprintf(buf, PAGE_SIZE, "%d\n", enable);
+	return snprintf(buf, PAGE_SIZE, "%d\n",
+			enable && !performance_unlock);
 }
 
 static int enable_store(const char *buf, const struct kernel_param *kp)
@@ -237,6 +242,12 @@ static int enable_store(const char *buf, const struct kernel_param *kp)
 	if (sscanf(buf, "%u\n", &val) == 0) {
 		pr_warn("cb input invalid (%s)\n", buf);
 		return -EINVAL;
+	}
+
+	if (performance_unlock) {
+		for (i = 0; i < NR_CLUS_MAX; ++i)
+			cb_reset_qos(i);
+		return 0;
 	}
 
 	enable = (bool) val;
@@ -298,7 +309,7 @@ static inline struct cpufreq_bouncing *cb_get(int cpu)
 	if (unlikely(!cb->ctl_inited))
 		return NULL;
 
-	if (!enable || !cb->enable)
+	if (performance_unlock || !enable || !cb->enable)
 		return NULL;
 
 	return cb;

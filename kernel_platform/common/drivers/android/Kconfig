@@ -77,6 +77,34 @@ config ANDROID_VENDOR_HOOKS
 	  Allow vendor modules to attach to tracepoint "hooks" defined via
 	  DECLARE_HOOK or DECLARE_RESTRICTED_HOOK.
 
+config ANDROID_AGGRESSIVE_PERFORMANCE
+	bool "Aggressive Android performance profile"
+	depends on CPU_FREQ
+	help
+	  Select a latency-first profile intended for high-performance Android
+	  devices with fast zram.  It gives schedutil more DVFS headroom, reduces
+	  its default rate limit, raises the initial I/O-wakeup boost, and installs
+	  zram-oriented VM defaults during late boot.
+
+	  The VM defaults are deliberately writable: Android init or a tuning
+	  service can still replace them through the normal sysctl interfaces.
+	  This option increases power use and heat and can reduce battery life.
+
+config ANDROID_THERMAL_EMERGENCY_ONLY
+	bool "Ignore non-emergency generic thermal trips"
+	depends on ANDROID_AGGRESSIVE_PERFORMANCE && THERMAL
+	help
+	  Prevent the generic thermal governor and generic active/passive trip
+	  notifications from applying performance caps.  HOT and CRITICAL trips,
+	  including the emergency poweroff path, remain active.
+
+	  This does not bypass limits imposed by firmware, PMIC hardware, vendor
+	  drivers, or an Android thermal service which polls sensors directly.
+
+	  WARNING: This can cause severe overheating, forced shutdowns, premature
+	  battery ageing, or permanent hardware damage.  Enable only on hardware
+	  with adequate external cooling and retain a known-good boot image.
+
 config ANDROID_DEBUG_KINFO
 	bool "Android Debug Kernel Information Support"
 	depends on KALLSYMS

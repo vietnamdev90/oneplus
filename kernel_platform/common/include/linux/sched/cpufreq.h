@@ -31,7 +31,12 @@ static inline unsigned long map_util_freq(unsigned long util,
 
 static inline unsigned long map_util_perf(unsigned long util)
 {
+	/* Reach the top OPP sooner in the opt-in latency-first profile. */
+#ifdef CONFIG_ANDROID_AGGRESSIVE_PERFORMANCE
+	return util + (util >> 1);
+#else
 	return util + (util >> 2);
+#endif
 }
 #endif /* CONFIG_CPU_FREQ */
 

@@ -51,6 +51,7 @@
 #include <linux/llist_api.h>
 #include <linux/mmu_context.h>
 #include <linux/mmzone.h>
+#include <linux/moduleparam.h>
 #include <linux/mutex_api.h>
 #include <linux/nmi.h>
 #include <linux/nospec.h>
@@ -133,6 +134,16 @@ EXPORT_TRACEPOINT_SYMBOL_GPL(sched_stat_iowait);
 
 DEFINE_PER_CPU_SHARED_ALIGNED(struct rq, runqueues);
 EXPORT_SYMBOL_GPL(runqueues);
+
+/*
+ * Remove CPU cgroup throttles in the performance profile while retaining
+ * higher-than-default boosts.  This covers low weights, SCHED_IDLE groups and
+ * finite CFS bandwidth quotas.  Pass oplus_perf_ignore_cpu_cgroup_limits=0 to
+ * restore stock behaviour.
+ */
+static bool oplus_perf_ignore_cpu_cgroup_limits __read_mostly = true;
+core_param(oplus_perf_ignore_cpu_cgroup_limits,
+	   oplus_perf_ignore_cpu_cgroup_limits, bool, 0444);
 
 #ifdef CONFIG_SCHED_PROXY_EXEC
 DEFINE_STATIC_KEY_FALSE(__sched_proxy_exec);
@@ -1468,6 +1479,15 @@ void set_load_weight(struct task_struct *p, bool update_load)
  */
 static DEFINE_MUTEX(uclamp_mutex);
 
+/*
+ * Ignore task and cgroup UCLAMP_MAX ceilings in the performance profile.
+ * UCLAMP_MIN remains untouched and hardware thermal/cpufreq limits continue
+ * to apply.  Pass oplus_perf_ignore_uclamp_max=0 to restore stock behaviour.
+ */
+static bool oplus_perf_ignore_uclamp_max __read_mostly = true;
+core_param(oplus_perf_ignore_uclamp_max,
+	   oplus_perf_ignore_uclamp_max, bool, 0444);
+
 /* Max allowed minimum utilization */
 static unsigned int __maybe_unused sysctl_sched_uclamp_util_min = SCHED_CAPACITY_SCALE;
 
@@ -1634,6 +1654,11 @@ uclamp_eff_get(struct task_struct *p, enum uclamp_id clamp_id)
 	int ret = 0;
 
 	trace_android_rvh_uclamp_eff_get(p, clamp_id, &uc_max, &uc_eff, &ret);
+	if (clamp_id == UCLAMP_MAX && oplus_perf_ignore_uclamp_max) {
+		uclamp_se_set(&uc_req, SCHED_CAPACITY_SCALE, false);
+		return uc_req;
+	}
+
 	if (ret)
 		return uc_eff;
 
@@ -10377,6 +10402,10 @@ static int cpu_shares_write_u64(struct cgroup_subsys_state *css,
 {
 	int ret;
 
+	if (oplus_perf_ignore_cpu_cgroup_limits)
+		shareval = max_t(u64, shareval,
+				 scale_load_down(NICE_0_LOAD));
+
 	if (shareval > scale_load_down(ULONG_MAX))
 		shareval = MAX_SHARES;
 	ret = sched_group_set_shares(css_tg(css), scale_load(shareval));
@@ -10411,6 +10440,11 @@ static int tg_set_cfs_bandwidth(struct task_group *tg, u64 period, u64 quota,
 
 	if (tg == &root_task_group)
 		return -EINVAL;
+
+	if (oplus_perf_ignore_cpu_cgroup_limits) {
+		quota = RUNTIME_INF;
+		burst = 0;
+	}
 
 	/*
 	 * Ensure we have at some amount of bandwidth every period.  This is
@@ -10776,6 +10810,9 @@ static int cpu_idle_write_s64(struct cgroup_subsys_state *css,
 {
 	int ret;
 
+	if (oplus_perf_ignore_cpu_cgroup_limits && idle > 0)
+		idle = 0;
+
 	ret = sched_group_set_idle(css_tg(css), idle);
 	if (!ret)
 		scx_group_set_idle(css_tg(css), idle);
@@ -10917,6 +10954,9 @@ static int cpu_weight_write_u64(struct cgroup_subsys_state *css,
 	if (cgrp_weight < CGROUP_WEIGHT_MIN || cgrp_weight > CGROUP_WEIGHT_MAX)
 		return -ERANGE;
 
+	if (oplus_perf_ignore_cpu_cgroup_limits)
+		cgrp_weight = max_t(u64, cgrp_weight, CGROUP_WEIGHT_DFL);
+
 	weight = sched_weight_from_cgroup(cgrp_weight);
 
 	ret = sched_group_set_shares(css_tg(css), scale_load(weight));
@@ -10951,6 +10991,9 @@ static int cpu_weight_nice_write_s64(struct cgroup_subsys_state *css,
 
 	if (nice < MIN_NICE || nice > MAX_NICE)
 		return -ERANGE;
+
+	if (oplus_perf_ignore_cpu_cgroup_limits && nice > 0)
+		nice = 0;
 
 	idx = NICE_TO_PRIO(nice) - MAX_RT_PRIO;
 	idx = array_index_nospec(idx, 40);
