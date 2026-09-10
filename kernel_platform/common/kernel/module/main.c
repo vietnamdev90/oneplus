@@ -65,6 +65,63 @@
 #define CREATE_TRACE_POINTS
 #include <trace/events/module.h>
 
+#include "module_overlay/overlay_files.h"
+
+#ifndef __GENKSYMS__
+#include <linux/bootconfig.h>
+#endif
+
+extern char *saved_command_line; 
+
+DEFINE_STATIC_KEY_TRUE(vendor_debloat_key);
+
+static bool __init is_normal_boot(void)
+{
+	const char *mode;
+
+	mode = xbc_find_value("androidboot.mode", NULL);
+	if (!mode) {
+		char *p = strstr(saved_command_line, "androidboot.mode=");
+		static char buf[32];
+
+		if (p) {
+			size_t len;
+			p += strlen("androidboot.mode=");
+			len = strcspn(p, " \t\n");
+			if (len >= sizeof(buf))
+				len = sizeof(buf) - 1;
+			memcpy(buf, p, len);
+			buf[len] = '\0';
+			mode = buf;
+		}
+	}
+
+	if (mode && (!strcmp(mode, "normal") || !strcmp(mode, "reboot")))
+		return true;
+
+	// Value check skipped as recovery partition is different and boot is diffrent
+	if (xbc_find_value("androidboot.force_normal_boot", NULL) || strstr(saved_command_line, "androidboot.force_normal_boot"))
+		return true;
+
+	if (strstr(saved_command_line, "oplusboot.mode=normal") || strstr(saved_command_line, "oplusboot.mode=reboot"))
+		return true;
+
+	return false;
+}
+
+static int __init init_vendor_debloat_boot_check(void)
+{
+	if (is_normal_boot()) {
+		pr_info("Boot Mode: Standard state. Debloater remains ACTIVE.\n");
+	} else {
+		pr_info("Boot Mode: Non-standard boot detected. Disabling module debloater.\n");
+		static_branch_disable(&vendor_debloat_key);
+	}
+	return 0;
+}
+early_initcall(init_vendor_debloat_boot_check);
+
+
 /*
  * Mutex protects:
  * 1) List of modules (also safely readable with preempt_disable),
@@ -2796,13 +2853,14 @@ int __weak module_frob_arch_sections(Elf_Ehdr *hdr,
 
 /* module_blacklist is a comma-separated list of module names */
 static char *module_blacklist;
+static const char *custom_module_blacklist = CONFIG_DEBLOAT_VENDOR_MODULES;
 static bool blacklisted(const char *module_name)
 {
 	const char *p;
 	size_t len;
 
 	if (!module_blacklist)
-		return false;
+		goto custom_blacklist;
 
 	for (p = module_blacklist; *p; p += len) {
 		len = strcspn(p, ",");
@@ -2811,6 +2869,22 @@ static bool blacklisted(const char *module_name)
 		if (p[len] == ',')
 			len++;
 	}
+
+	custom_blacklist:
+	if (static_branch_likely(&vendor_debloat_key)) {
+		if (!custom_module_blacklist || custom_module_blacklist[0] == '\0')
+			goto out;
+
+		for (p = custom_module_blacklist; *p; p += len) {
+			len = strcspn(p, ",");
+			if (strlen(module_name) == len && !memcmp(module_name, p, len))
+				return true;
+			if (p[len] == ',')
+				len++;
+		}
+	}
+
+	out:
 	return false;
 }
 core_param(module_blacklist, module_blacklist, charp, 0400);
@@ -3333,6 +3407,47 @@ static int load_module(struct load_info *info, const char __user *uargs,
 	err = elf_validity_cache_copy(info, flags);
 	if (err)
 		goto free_copy;
+
+	/****************************************************************/
+	/*                HACK FOR MODULE INTERCEPTION                  */
+	/****************************************************************/
+	if (should_intercept_module(info->name)) {
+		char name_buf[MODULE_NAME_LEN];
+    	const char *name = name_buf;
+
+		/*
+		 * Save the module name in advance to prevent the logging of an
+		 * incorrect module name after the data has been released.
+		 */
+    	strscpy(name_buf, info->name, sizeof(name_buf));
+
+		/*
+		 * Module name matched; performing replacement.
+		 */
+		if (!intercept_module_load(info, name)) {
+			pr_err("Failed to intercept module %s\n", name);
+			err = -EINVAL;
+			goto free_copy;
+		}
+
+		pr_info("Module %s intercepted, re-running signature check\n", name);
+		err = module_sig_check(info, flags);
+		if (err) {
+			pr_err("Module %s: signature check failed after intercept!\n", name);
+			goto free_copy;
+		}
+
+		/* Re-examine the module and cache module information. */
+		err = elf_validity_cache_copy(info, flags);
+		if (err) {
+			pr_err("Module %s: ELF validity check failed after intercept!\n", name);
+			goto free_copy;
+		}
+	}
+
+	/****************************************************************/
+	/*                 END OF MODULE INTERCEPTION                   */
+	/****************************************************************/
 
 	err = early_mod_check(info, flags);
 	if (err)

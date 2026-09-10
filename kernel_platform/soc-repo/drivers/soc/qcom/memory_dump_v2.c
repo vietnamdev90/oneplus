@@ -133,12 +133,11 @@ struct memdump_info {
 static LIST_HEAD(dynamic_dump_list);
 DEFINE_MUTEX(dump_mutex);
 static struct msm_memory_dump memdump;
-static int dynamic_memdump_enable;
 #if defined(CONFIG_DEEPSLEEP) || defined(CONFIG_HIBERNATION)
 static size_t total_size;
 static phys_addr_t global_mini_phys_addr;
 #endif
-static int dynamic_memdump_enable = 0;
+static int dynamic_memdump_enable = 1;
 
 /**
  * reset_sprs_dump_table - reset the sprs dump table
@@ -1487,14 +1486,16 @@ static int set_dynamic_memdump(const char *val, const struct kernel_param *kp)
 	if (sscanf(val, "%du", &enable) != 1)
 		return -EINVAL;
 
-	if (enable) {
-		list_for_each_entry_safe(dump_info, tmp, &dynamic_dump_list, link) {
-			ret = dynamic_mem_dump_enable(dump_info);
-			if (ret)
-				break;
-		}
-		dynamic_memdump_enable = 1;
+	dynamic_memdump_enable = !!enable;
+	if (!dynamic_memdump_enable)
+		return 0;
+
+	list_for_each_entry_safe(dump_info, tmp, &dynamic_dump_list, link) {
+		ret = dynamic_mem_dump_enable(dump_info);
+		if (ret)
+			break;
 	}
+
 	return 0;
 }
 #else
@@ -1574,6 +1575,20 @@ static int mem_dump_probe(struct platform_device *pdev)
 				dev_err(&pdev->dev, "static dump alloc failed\n");
 		}
 	}
+
+#ifdef CONFIG_QCOM_DYNAMIC_MEMORY_DUMP
+	if (dynamic_memdump_enable) {
+		struct memdump_info *dump_info;
+
+		list_for_each_entry(dump_info, &dynamic_dump_list, link) {
+			ret = dynamic_mem_dump_enable(dump_info);
+			if (ret)
+				dev_err(&pdev->dev,
+					"failed to enable dynamic dump %s: %d\n",
+					dump_info->name, ret);
+		}
+	}
+#endif
 
 	free_size = rmem->size - used_size;
 	if (free_size > 0)

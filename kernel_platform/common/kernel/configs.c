@@ -1,3 +1,5 @@
+// ccache:disable
+// CI_RUN_ID: local-1787669817
 // SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * kernel/configs.c

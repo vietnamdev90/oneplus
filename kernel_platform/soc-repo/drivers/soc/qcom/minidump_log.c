@@ -1586,9 +1586,11 @@ static void register_pstore_info(void)
 	struct device_node *node, *tmp_node;
 	struct resource resource;
 	struct reserved_mem *rmem = NULL;
-	unsigned int size;
+	u32 record_size = 0, console_size = 0, ftrace_size = 0;
+	u32 pmsg_size = 0;
 	phys_addr_t paddr;
 	unsigned long total_size;
+	unsigned long dmesg_size;
 	struct md_region md_entry;
 
 	node = tmp_node = of_find_compatible_node(NULL, NULL, "ramoops");
@@ -1621,56 +1623,69 @@ static void register_pstore_info(void)
 		total_size = resource_size(&resource);
 	}
 
-	ret = of_property_read_u32(node, "record-size", &size);
-	if (!ret && size > 0) {
+	of_property_read_u32(node, "record-size", &record_size);
+	of_property_read_u32(node, "console-size", &console_size);
+	of_property_read_u32(node, "ftrace-size", &ftrace_size);
+	of_property_read_u32(node, "pmsg-size", &pmsg_size);
+
+	if ((unsigned long)console_size + ftrace_size + pmsg_size > total_size) {
+		pr_err("Invalid ramoops layout: auxiliary regions exceed reserved memory\n");
+		return;
+	}
+
+	/*
+	 * Ramoops uses all memory not reserved for console, pmsg and ftrace as
+	 * its dmesg area, then splits that area into record-size chunks.  Use
+	 * the complete dmesg area here so the following Minidump regions start
+	 * at the same addresses as the persistent RAM zones created by ramoops.
+	 */
+	dmesg_size = total_size - console_size - ftrace_size - pmsg_size;
+	if (record_size && dmesg_size >= record_size) {
 		strscpy(md_entry.name, "KDMESG", sizeof(md_entry.name));
 		md_entry.virt_addr = (uintptr_t)phys_to_virt(paddr);
 		md_entry.phys_addr = paddr;
-		md_entry.size = size;
+		md_entry.size = dmesg_size;
 
 		if (msm_minidump_add_region(&md_entry) < 0)
 			pr_err("Failed to add dmesg in Minidump\n");
 
-		paddr += size;
+		paddr += dmesg_size;
 	}
 
-	ret = of_property_read_u32(node, "console-size", &size);
-	if (!ret && size > 0) {
+	if (console_size) {
 		strscpy(md_entry.name, "KCONSOLE", sizeof(md_entry.name));
 		md_entry.virt_addr = (uintptr_t)phys_to_virt(paddr);
 		md_entry.phys_addr = paddr;
-		md_entry.size = size;
+		md_entry.size = console_size;
 
 		if (msm_minidump_add_region(&md_entry) < 0)
 			pr_err("Failed to add console in Minidump\n");
 
-		paddr += size;
+		paddr += console_size;
 	}
 
-	ret = of_property_read_u32(node, "ftrace-size", &size);
-	if (!ret && size > 0) {
-		strscpy(md_entry.name, "KFTRACE", sizeof(md_entry.name));
-		md_entry.virt_addr = (uintptr_t)phys_to_virt(paddr);
-		md_entry.phys_addr = paddr;
-		md_entry.size = size;
-
-		if (msm_minidump_add_region(&md_entry) < 0)
-			pr_err("Failed to add ftrace in Minidump\n");
-
-		paddr += size;
-	}
-
-	ret = of_property_read_u32(node, "pmsg-size", &size);
-	if (!ret && size > 0) {
+	if (pmsg_size) {
 		strscpy(md_entry.name, "KPMSG", sizeof(md_entry.name));
 		md_entry.virt_addr = (uintptr_t)phys_to_virt(paddr);
 		md_entry.phys_addr = paddr;
-		md_entry.size = size;
+		md_entry.size = pmsg_size;
 
 		if (msm_minidump_add_region(&md_entry) < 0)
 			pr_err("Failed to add pmsg in Minidump\n");
 
-		paddr += size;
+		paddr += pmsg_size;
+	}
+
+	if (ftrace_size) {
+		strscpy(md_entry.name, "KFTRACE", sizeof(md_entry.name));
+		md_entry.virt_addr = (uintptr_t)phys_to_virt(paddr);
+		md_entry.phys_addr = paddr;
+		md_entry.size = ftrace_size;
+
+		if (msm_minidump_add_region(&md_entry) < 0)
+			pr_err("Failed to add ftrace in Minidump\n");
+
+		paddr += ftrace_size;
 	}
 }
 #endif

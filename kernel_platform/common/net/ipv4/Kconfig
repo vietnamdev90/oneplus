@@ -481,7 +481,7 @@ if TCP_CONG_ADVANCED
 
 config TCP_CONG_BIC
 	tristate "Binary Increase Congestion (BIC) control"
-	default m
+	default y
 	help
 	  BIC-TCP is a sender-side only change that ensures a linear RTT
 	  fairness under large windows while offering both scalability and
@@ -503,7 +503,7 @@ config TCP_CONG_CUBIC
 
 config TCP_CONG_WESTWOOD
 	tristate "TCP Westwood+"
-	default m
+	default y
 	help
 	  TCP Westwood+ is a sender-side only modification of the TCP Reno
 	  protocol stack that optimizes the performance of TCP congestion
@@ -517,7 +517,7 @@ config TCP_CONG_WESTWOOD
 
 config TCP_CONG_HTCP
 	tristate "H-TCP"
-	default m
+	default y
 	help
 	  H-TCP is a send-side only modifications of the TCP Reno
 	  protocol stack that optimizes the performance of TCP
@@ -528,7 +528,7 @@ config TCP_CONG_HTCP
 
 config TCP_CONG_HSTCP
 	tristate "High Speed TCP"
-	default n
+	default y
 	help
 	  Sally Floyd's High Speed TCP (RFC 3649) congestion control.
 	  A modification to TCP's congestion control mechanism for use
@@ -538,7 +538,7 @@ config TCP_CONG_HSTCP
 
 config TCP_CONG_HYBLA
 	tristate "TCP-Hybla congestion control algorithm"
-	default n
+	default y
 	help
 	  TCP-Hybla is a sender-side only change that eliminates penalization of
 	  long-RTT, large-bandwidth connections, like when satellite legs are
@@ -547,7 +547,7 @@ config TCP_CONG_HYBLA
 
 config TCP_CONG_VEGAS
 	tristate "TCP Vegas"
-	default n
+	default y
 	help
 	  TCP Vegas is a sender-side only change to TCP that anticipates
 	  the onset of congestion by estimating the bandwidth. TCP Vegas
@@ -557,7 +557,7 @@ config TCP_CONG_VEGAS
 
 config TCP_CONG_NV
 	tristate "TCP NV"
-	default n
+	default y
 	help
 	  TCP NV is a follow up to TCP Vegas. It has been modified to deal with
 	  10G networks, measurement noise introduced by LRO, GRO and interrupt
@@ -573,7 +573,7 @@ config TCP_CONG_NV
 
 config TCP_CONG_SCALABLE
 	tristate "Scalable TCP"
-	default n
+	default y
 	help
 	  Scalable TCP is a sender-side only change to TCP which uses a
 	  MIMD congestion control algorithm which has some nice scaling
@@ -582,7 +582,7 @@ config TCP_CONG_SCALABLE
 
 config TCP_CONG_LP
 	tristate "TCP Low Priority"
-	default n
+	default y
 	help
 	  TCP Low Priority (TCP-LP), a distributed algorithm whose goal is
 	  to utilize only the excess network bandwidth as compared to the
@@ -591,7 +591,7 @@ config TCP_CONG_LP
 
 config TCP_CONG_VENO
 	tristate "TCP Veno"
-	default n
+	default y
 	help
 	  TCP Veno is a sender-side only enhancement of TCP to obtain better
 	  throughput over wireless networks. TCP Veno makes use of state
@@ -603,7 +603,7 @@ config TCP_CONG_VENO
 config TCP_CONG_YEAH
 	tristate "YeAH TCP"
 	select TCP_CONG_VEGAS
-	default n
+	default y
 	help
 	  YeAH-TCP is a sender-side high-speed enabled TCP congestion control
 	  algorithm, which uses a mixed loss/delay approach to compute the
@@ -616,7 +616,7 @@ config TCP_CONG_YEAH
 
 config TCP_CONG_ILLINOIS
 	tristate "TCP Illinois"
-	default n
+	default y
 	help
 	  TCP-Illinois is a sender-side modification of TCP Reno for
 	  high speed long delay links. It uses round-trip-time to
@@ -628,7 +628,7 @@ config TCP_CONG_ILLINOIS
 
 config TCP_CONG_DCTCP
 	tristate "DataCenter TCP (DCTCP)"
-	default n
+	default y
 	help
 	  DCTCP leverages Explicit Congestion Notification (ECN) in the network to
 	  provide multi-bit feedback to the end hosts. It is designed to provide:
@@ -649,7 +649,7 @@ config TCP_CONG_DCTCP
 
 config TCP_CONG_CDG
 	tristate "CAIA Delay-Gradient (CDG)"
-	default n
+	default y
 	help
 	  CAIA Delay-Gradient (CDG) is a TCP congestion control that modifies
 	  the TCP sender in order to:
@@ -666,7 +666,7 @@ config TCP_CONG_CDG
 
 config TCP_CONG_BBR
 	tristate "BBR TCP"
-	default n
+	default y
 	help
 
 	  BBR (Bottleneck Bandwidth and RTT) TCP congestion control aims to
@@ -678,6 +678,24 @@ config TCP_CONG_BBR
 	  operate with shallow buffers, deep buffers, bufferbloat, policers, or
 	  AQM schemes that do not provide a delay signal. It requires the fq
 	  ("Fair Queue") pacing packet scheduler.
+
+config TCP_CONG_BBR3
+	tristate "BBRv3 TCP"
+	default y
+	help
+
+	  BBRv3 (Bottleneck Bandwidth and RTT version 3) TCP congestion control is a
+	  model-based congestion control algorithm that aims to maximize
+	  network utilization, keep queues and retransmit rates low, and to be
+	  able to coexist with Reno/CUBIC in common scenarios. It builds an
+	  explicit model of the network path.  It tolerates a targeted degree
+	  of random packet loss and delay. It can operate over LAN, WAN,
+	  cellular, wifi, or cable modem links, and can use shallow-threshold
+	  ECN signals. It can coexist to some degree with flows that use
+	  loss-based congestion control, and can operate with shallow buffers,
+	  deep buffers, bufferbloat, policers, or AQM schemes that do not
+	  provide a delay signal. It requires pacing, using either TCP internal
+	  pacing or the fq ("Fair Queue") pacing packet scheduler.
 
 choice
 	prompt "Default TCP congestion control"
@@ -716,6 +734,9 @@ choice
 	config DEFAULT_BBR
 		bool "BBR" if TCP_CONG_BBR=y
 
+	config DEFAULT_BBR3
+		bool "BBR3" if TCP_CONG_BBR3=y
+
 	config DEFAULT_RENO
 		bool "Reno"
 endchoice
@@ -740,6 +761,7 @@ config DEFAULT_TCP_CONG
 	default "dctcp" if DEFAULT_DCTCP
 	default "cdg" if DEFAULT_CDG
 	default "bbr" if DEFAULT_BBR
+	default "bbr3" if DEFAULT_BBR
 	default "cubic"
 
 config TCP_SIGPOOL
