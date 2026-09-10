@@ -105,12 +105,33 @@ function build_kernel_cmd() {
            return 1
        fi
     fi
-    TOPDIR="${TOPDIR}" STOCK_VENDOR_BOOT="${STOCK_VENDOR_BOOT:-${TOPDIR}/vendor_boot.img}" \
+    TOPDIR="${TOPDIR}" \
+         STOCK_VENDOR_BOOT="${STOCK_VENDOR_BOOT:-${TOPDIR}/vendor_boot.img}" \
+         STOCK_MODULE_ZIP="${STOCK_MODULE_ZIP:-${TOPDIR}/modules.zip}" \
         "${TOPDIR}/kernel_platform/oplus/build/repack_stock_flatten_vendor_boot.sh" \
         "${variants_platform}" "${variants_type}" || return 1
-    TOPDIR="${TOPDIR}" STOCK_MODULE_ZIP="${STOCK_MODULE_ZIP:-${TOPDIR}/../dlkm/module.zip}" \
+    TOTOPDIR="${TOPDIR}" \
+        STOCK_MODULE_ZIP="${STOCK_MODULE_ZIP:-${TOPDIR}/modules.zip}" \
+        STOCK_SYSTEM_DLKM="${STOCK_SYSTEM_DLKM:-${TOPDIR}/system_dlkm.img}" \
+        STOCK_VENDOR_DLKM="${STOCK_VENDOR_DLKM:-${TOPDIR}/vendor_dlkm.img}" \
         "${TOPDIR}/kernel_platform/oplus/build/repack_stock_flatten_dlkm.sh" \
         "${variants_platform}" "${variants_type}" || return 1
+        
+        # Keep one canonical image per partition. Kleaf may also emit filesystem-
+        # suffixed and flattened intermediates; they are not final flash artifacts.
+        local dist_dir duplicate
+        for dist_dir in \
+        "${TOPDIR}/kernel_platform/out/msm-kernel-${variants_platform}-${variants_type}/dist" \
+        "${TOPDIR}/out/dist"; do
+        [[ -d "${dist_dir}" ]] || continue
+        for duplicate in \
+            system_dlkm.ext4.img system_dlkm.erofs.img \
+            system_dlkm.flatten.ext4.img system_dlkm.flatten.erofs.img \
+            vendor_dlkm.flatten.img vendor_dlkm.flatten.ext4.img \
+            vendor_dlkm.flatten.erofs.img; do
+            rm -f -- "${dist_dir}/${duplicate}"
+        done
+    done
     build_end_time
 }
 
