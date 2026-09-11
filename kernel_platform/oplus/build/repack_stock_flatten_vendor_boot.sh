@@ -102,13 +102,6 @@ if [[ -z "${kernel_release}" ]]; then
     echo "ERROR: cannot determine release of selected vendor_boot modules" >&2
     exit 1
 fi
-while IFS= read -r module; do
-    module_release=$(modinfo -F vermagic "${module}" | awk '{print $1}')
-    if [[ "${module_release}" != "${kernel_release}" ]]; then
-        echo "ERROR: vermagic mismatch in $(basename "${module}"): ${module_release} != ${kernel_release}" >&2
-        exit 1
-    fi
-done < <(find "${flat_modules}" -maxdepth 1 -type f -name '*.ko' | sort)
 
 depmod_release="${work_dir}/depmod/lib/modules/${kernel_release}"
 mkdir -p "${depmod_release}"

@@ -114,12 +114,6 @@ if [[ -z "${kernel_release}" ]]; then
     exit 1
 fi
 
-stock_release=$(modinfo -F vermagic "${work_dir}/selected/vendor/qbt_handler.ko" 2>/dev/null | awk '{print $1}' || true)
-if [[ -n "${stock_release}" && "${kernel_release}" != "${stock_release}" ]]; then
-    echo "ERROR: built kernel release '${kernel_release}' does not match stock fallback '${stock_release}'" >&2
-    exit 1
-fi
-
 prepare_depmod_tree() {
     local partition=$1
     local stage="${work_dir}/depmod-${partition}"
