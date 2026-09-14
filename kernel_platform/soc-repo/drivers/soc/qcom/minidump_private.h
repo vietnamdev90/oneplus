@@ -30,7 +30,8 @@
 #define MD_SS_DISABLED		('D' << 24 | 'S' << 16 | 'B' << 8 | 'L' << 0)
 
 #define MAX_NUM_ENTRIES         (CONFIG_MINIDUMP_MAX_ENTRIES + 1)
-#define MAX_STRTBL_SIZE		(MAX_NUM_ENTRIES * MAX_REGION_NAME_LENGTH)
+#define MAX_ELF_ENTRIES		(MAX_NUM_ENTRIES + 4)
+#define MAX_STRTBL_SIZE		(MAX_ELF_ENTRIES * MAX_REGION_NAME_LENGTH)
 
 extern unsigned int md_num_regions;
 extern struct md_elfhdr minidump_elfheader;

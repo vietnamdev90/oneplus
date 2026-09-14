@@ -38,9 +38,7 @@ module_param(enable_microdump, int, 0644);
 static int start_qcomdump;
 module_param(start_qcomdump, int, 0644);
 
-static struct microdump_data *drv;
-
-static int microdump_crash_collection(void)
+static int microdump_crash_collection(struct microdump_data *drv)
 {
 	int ret;
 	size_t size_reason = 0, size_data = 0;
@@ -105,9 +103,12 @@ static int microdump_modem_ssr_notifier_nb(struct notifier_block *nb,
 		unsigned long code, void *data)
 {
 	struct qcom_ssr_notify_data *notify_data = data;
+	struct microdump_data *drv = container_of(nb, struct microdump_data,
+						  microdump_modem_ssr_nb);
 
-	if (code == QCOM_SSR_BEFORE_SHUTDOWN && notify_data->crashed)
-		return microdump_crash_collection();
+	if (code == QCOM_SSR_BEFORE_SHUTDOWN && notify_data &&
+	    notify_data->crashed)
+		return microdump_crash_collection(drv);
 	else
 		return NOTIFY_OK;
 }
@@ -134,17 +135,23 @@ static int microdump_modem_ssr_register_notifier(struct microdump_data *drv)
 
 static void microdump_modem_ssr_unregister_notifier(struct microdump_data *drv)
 {
+	if (IS_ERR_OR_NULL(drv->microdump_modem_notify_handler))
+		return;
+
 	qcom_unregister_ssr_notifier(drv->microdump_modem_notify_handler,
 		&drv->microdump_modem_ssr_nb);
 
 	drv->microdump_modem_notify_handler = NULL;
 }
 
-static void __exit microdump_exit(void)
+static void microdump_remove(struct platform_device *pdev)
 {
-	microdump_modem_ssr_unregister_notifier(drv);
+	struct microdump_data *drv = platform_get_drvdata(pdev);
 
-	kfree(drv);
+	if (!drv)
+		return;
+
+	microdump_modem_ssr_unregister_notifier(drv);
 }
 
 
@@ -152,30 +159,22 @@ static int microdump_probe(struct platform_device *pdev)
 {
 	int ret = -ENOMEM;
 
-	drv = kzalloc(sizeof(struct microdump_data), GFP_KERNEL);
+	struct microdump_data *drv;
+
+	drv = devm_kzalloc(&pdev->dev, sizeof(*drv), GFP_KERNEL);
 	if (!drv)
 		goto out;
 
 	drv->microdump_dev = &pdev->dev;
-	if (!drv->microdump_dev) {
-		pr_err("%s: Unable to create a microdump_modem ramdump device\n"
-			, __func__);
-		ret = -ENODEV;
-		goto out_kfree;
-	}
-
 	ret = microdump_modem_ssr_register_notifier(drv);
 	if (ret) {
 		pr_err("%s: microdump_modem_ssr_register_notifier failed\n", __func__);
-		goto out_kfree;
+		goto out;
 	}
+	platform_set_drvdata(pdev, drv);
 
 	return ret;
 
-out_kfree:
-	pr_err("%s: Failed to register microdump collector\n", __func__);
-	kfree(drv);
-	drv = NULL;
 out:
 	return ret;
 }
@@ -187,26 +186,14 @@ static const struct of_device_id microdump_match_table[] = {
 
 static struct platform_driver microdump_driver = {
 	.probe = microdump_probe,
+	.remove = microdump_remove,
 	.driver = {
 		.name = "msm_microdump_modem",
 		.of_match_table = microdump_match_table,
 	},
 };
 
-static int __init microdump_init(void)
-{
-	int ret;
-
-	ret = platform_driver_register(&microdump_driver);
-
-	if (ret)
-		pr_err("%s: register failed %d\n", __func__, ret);
-
-	return ret;
-}
-
-module_init(microdump_init)
-module_exit(microdump_exit);
+module_platform_driver(microdump_driver);
 #endif
 
 MODULE_DESCRIPTION("Qualcomm Technologies, Inc. Microdump Collector");

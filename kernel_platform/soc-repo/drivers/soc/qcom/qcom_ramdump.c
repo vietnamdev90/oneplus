@@ -7,6 +7,7 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/elf.h>
+#include <linux/overflow.h>
 #include <linux/wait.h>
 #include <linux/cdev.h>
 #include <linux/atomic.h>
@@ -14,10 +15,7 @@
 #include <linux/devcoredump.h>
 #include <linux/of.h>
 #include <linux/io.h>
-#include <linux/devcoredump.h>
 #include <linux/soc/qcom/mdt_loader.h>
-
-#define RAMDUMP_TIMEOUT 120000
 
 #define SIZEOF_ELF_STRUCT(__xhdr) \
 static inline size_t sizeof_elf_##__xhdr(unsigned char class) \
@@ -57,6 +55,10 @@ struct ramdump_device {
 	char name[256];
 	struct cdev cdev;
 	struct device *dev;
+};
+
+static const struct file_operations ramdump_fops = {
+	.owner = THIS_MODULE,
 };
 
 struct qcom_ramdump_desc {
@@ -116,7 +118,8 @@ int qcom_dump(struct list_head *segs, struct device *dev)
 
 	list_for_each_entry(segment, segs, node) {
 		pr_info("Got segment size %zd\n", segment->size);
-		data_size += segment->size;
+		if (check_add_overflow(data_size, segment->size, &data_size))
+			return -EOVERFLOW;
 	}
 
 	data = vmalloc(data_size);
@@ -127,15 +130,17 @@ int qcom_dump(struct list_head *segs, struct device *dev)
 		if (segment->va)
 			memcpy(data + offset, segment->va, segment->size);
 		else {
-			ptr = devm_ioremap(dev, segment->da, segment->size);
+			ptr = ioremap(segment->da, segment->size);
 			if (!ptr) {
 				dev_err(dev,
 					"invalid coredump segment (%pad, %zu)\n",
 					&segment->da, segment->size);
 				memset(data + offset, 0xff, segment->size);
-			} else
+			} else {
 				memcpy_fromio(data + offset, ptr,
-					      segment->size);
+						      segment->size);
+				iounmap(ptr);
+			}
 		}
 		offset += segment->size;
 	}
@@ -170,10 +175,17 @@ int qcom_elf_dump(struct list_head *segs, struct device *dev, unsigned char clas
 
 	if (!segs || list_empty(segs))
 		return -EINVAL;
+	if (class != ELFCLASS32 && class != ELFCLASS64)
+		return -EINVAL;
 
 	data_size = sizeof_elf_hdr(class);
 	list_for_each_entry(segment, segs, node) {
-		data_size += sizeof_elf_phdr(class) + segment->size;
+		size_t segment_size;
+
+		if (check_add_overflow(sizeof_elf_phdr(class), segment->size,
+				       &segment_size) ||
+		    check_add_overflow(data_size, segment_size, &data_size))
+			return -EOVERFLOW;
 		phnum++;
 	}
 
@@ -210,15 +222,17 @@ int qcom_elf_dump(struct list_head *segs, struct device *dev, unsigned char clas
 		if (segment->va)
 			memcpy(data + offset, segment->va, segment->size);
 		else {
-			ptr = devm_ioremap(dev, segment->da, segment->size);
+			ptr = ioremap(segment->da, segment->size);
 			if (!ptr) {
 				dev_err(dev,
 					"invalid coredump segment (%pad, %zu)\n",
 					&segment->da, segment->size);
 				memset(data + offset, 0xff, segment->size);
-			} else
+			} else {
 				memcpy_fromio(data + offset, ptr,
-					      segment->size);
+						      segment->size);
+				iounmap(ptr);
+			}
 		}
 
 		offset += segment->size;
@@ -231,18 +245,31 @@ EXPORT_SYMBOL(qcom_elf_dump);
 
 int qcom_fw_elf_dump(struct firmware *fw, struct device *dev)
 {
-	const struct elf32_phdr *phdrs, *phdr;
+	const struct elf32_phdr *phdr;
 	const struct elf32_hdr *ehdr;
-	struct qcom_dump_segment *segment;
+	struct qcom_dump_segment *segment, *tmp;
 	struct list_head head;
-	int i;
+	size_t phdr_table_size;
+	int i, ret = 0;
+
+	if (!fw || !fw->data || fw->size < sizeof(*ehdr))
+		return -EINVAL;
 
 	ehdr = (struct elf32_hdr *)fw->data;
-	phdrs = (struct elf32_phdr *)(ehdr + 1);
+	if (memcmp(ehdr->e_ident, ELFMAG, SELFMAG) ||
+	    ehdr->e_ident[EI_CLASS] != ELFCLASS32 ||
+	    ehdr->e_phentsize < sizeof(*phdr) ||
+	    check_mul_overflow((size_t)ehdr->e_phnum,
+			       (size_t)ehdr->e_phentsize, &phdr_table_size) ||
+	    ehdr->e_phoff > fw->size ||
+	    phdr_table_size > fw->size - ehdr->e_phoff)
+		return -EINVAL;
+
 	INIT_LIST_HEAD(&head);
 
 	for (i = 0; i < ehdr->e_phnum; i++) {
-		phdr = &phdrs[i];
+		phdr = (const void *)fw->data + ehdr->e_phoff +
+		       i * ehdr->e_phentsize;
 
 		if (phdr->p_type != PT_LOAD)
 			continue;
@@ -255,16 +282,25 @@ int qcom_fw_elf_dump(struct firmware *fw, struct device *dev)
 
 
 		segment = kzalloc(sizeof(*segment), GFP_KERNEL);
-		if (!segment)
-			return -ENOMEM;
+		if (!segment) {
+			ret = -ENOMEM;
+			goto free_segments;
+		}
 
 		segment->da = phdr->p_paddr;
 		segment->size = phdr->p_memsz;
 
 		list_add_tail(&segment->node, &head);
 	}
-	qcom_elf_dump(&head, dev, ELFCLASS32);
-	return 0;
+	ret = qcom_elf_dump(&head, dev, ELFCLASS32);
+
+free_segments:
+	list_for_each_entry_safe(segment, tmp, &head, node) {
+		list_del(&segment->node);
+		kfree(segment);
+	}
+
+	return ret;
 }
 EXPORT_SYMBOL(qcom_fw_elf_dump);
 
@@ -273,10 +309,15 @@ static int ramdump_devnode_init(void)
 	int ret;
 
 	ramdump_class = class_create(RAMDUMP_NAME);
+	if (IS_ERR(ramdump_class))
+		return PTR_ERR(ramdump_class);
+
 	ret = alloc_chrdev_region(&ramdump_dev, 0, RAMDUMP_NUM_DEVICES,
 				  RAMDUMP_NAME);
 	if (ret) {
 		pr_err("%s: unable to allocate major\n", __func__);
+		class_destroy(ramdump_class);
+		ramdump_class = NULL;
 		return ret;
 	}
 
@@ -292,7 +333,7 @@ void *qcom_create_ramdump_device(const char *dev_name, struct device *parent)
 
 	if (!dev_name) {
 		pr_err("%s: Invalid device name.\n", __func__);
-		return NULL;
+		return ERR_PTR(-EINVAL);
 	}
 
 	mutex_lock(&rd_minor_mutex);
@@ -308,7 +349,7 @@ void *qcom_create_ramdump_device(const char *dev_name, struct device *parent)
 	rd_dev = kzalloc(sizeof(struct ramdump_device), GFP_KERNEL);
 
 	if (!rd_dev)
-		return NULL;
+		return ERR_PTR(-ENOMEM);
 
 	/* get a minor number */
 	minor = ida_simple_get(&rd_minor_id, 0, RAMDUMP_NUM_DEVICES,
@@ -333,7 +374,7 @@ void *qcom_create_ramdump_device(const char *dev_name, struct device *parent)
 		goto fail_return_minor;
 	}
 
-	cdev_init(&rd_dev->cdev, NULL);
+	cdev_init(&rd_dev->cdev, &ramdump_fops);
 	ret = cdev_add(&rd_dev->cdev, MKDEV(MAJOR(ramdump_dev), minor), 1);
 	if (ret) {
 		pr_err("%s: cdev_add failed for %s (%d)\n", __func__,
@@ -355,11 +396,16 @@ EXPORT_SYMBOL(qcom_create_ramdump_device);
 
 void qcom_destroy_ramdump_device(void *dev)
 {
-	struct ramdump_device *rd_dev = dev_get_drvdata(dev);
-	int minor = MINOR(rd_dev->cdev.dev);
+	struct ramdump_device *rd_dev;
+	int minor;
 
-	if (IS_ERR_OR_NULL(rd_dev))
+	if (IS_ERR_OR_NULL(dev))
 		return;
+
+	rd_dev = dev_get_drvdata(dev);
+	if (!rd_dev)
+		return;
+	minor = MINOR(rd_dev->cdev.dev);
 
 	cdev_del(&rd_dev->cdev);
 	device_unregister(rd_dev->dev);
@@ -368,6 +414,17 @@ void qcom_destroy_ramdump_device(void *dev)
 }
 EXPORT_SYMBOL(qcom_destroy_ramdump_device);
 
+static void __exit qcom_ramdump_exit(void)
+{
+	if (!ramdump_devnode_inited)
+		return;
+
+	class_destroy(ramdump_class);
+	unregister_chrdev_region(ramdump_dev, RAMDUMP_NUM_DEVICES);
+	ida_destroy(&rd_minor_id);
+	ramdump_devnode_inited = false;
+}
+module_exit(qcom_ramdump_exit);
+
 MODULE_DESCRIPTION("Qualcomm Technologies, Inc. Ramdump driver");
 MODULE_LICENSE("GPL");
-

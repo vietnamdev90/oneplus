@@ -270,7 +270,7 @@ static inline void md_dump_slabinfo(void) {}
 
 bool md_register_memory_dump(int size, char *name)
 {
-	struct md_region md_entry;
+	struct md_region md_entry = {};
 	void *buffer_start;
 	struct page *page;
 	int ret;
@@ -321,7 +321,7 @@ bool md_unregister_memory_dump(char *name)
 {
 	struct page *page;
 	struct md_region mdr;
-	struct md_region md_entry;
+	struct md_region md_entry = {};
 
 	mdr = md_get_region(name);
 	if (!mdr.virt_addr) {

@@ -51,6 +51,7 @@ static int qcom_ramoops_probe(struct platform_device *pdev)
 	struct device_node *node;
 	struct reserved_mem *rmem;
 	long ret = 0;
+	u64 aux_size;
 	u32 value;
 
 	node = of_parse_phandle(of_node, "memory-region", 0);
@@ -91,6 +92,22 @@ static int qcom_ramoops_probe(struct platform_device *pdev)
 	parse_u32("max-reason", pdata->max_reason, pdata->max_reason);
 
 #undef parse_u32
+	aux_size = (u64)pdata->console_size + pdata->ftrace_size + pdata->pmsg_size;
+	if (aux_size > pdata->mem_size) {
+		dev_err(&pdev->dev, "ramoops subregions exceed reserved memory\n");
+		return -EINVAL;
+	}
+	if (pdata->record_size && pdata->record_size > pdata->mem_size - aux_size) {
+		dev_err(&pdev->dev, "ramoops record does not fit reserved memory\n");
+		return -EINVAL;
+	}
+
+	if (!pdata->record_size && !pdata->console_size &&
+	    !pdata->ftrace_size && !pdata->pmsg_size) {
+		dev_err(&pdev->dev, "ramoops has no enabled region\n");
+		return -EINVAL;
+	}
+
 	ramoops_pdev = platform_device_register_data(NULL, "ramoops", -1,
 						     pdata, sizeof(*pdata));
 	if (IS_ERR(ramoops_pdev)) {
@@ -109,7 +126,8 @@ static void qcom_ramoops_remove(struct platform_device *pdev)
 	struct platform_device *ramoops_pdev;
 
 	ramoops_pdev = platform_get_drvdata(pdev);
-	platform_device_unregister(ramoops_pdev);
+	if (ramoops_pdev)
+		platform_device_unregister(ramoops_pdev);
 }
 
 static const struct of_device_id qcom_ramoops_of_match[] = {

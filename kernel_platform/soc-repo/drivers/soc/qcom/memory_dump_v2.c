@@ -137,7 +137,7 @@ static struct msm_memory_dump memdump;
 static size_t total_size;
 static phys_addr_t global_mini_phys_addr;
 #endif
-static int dynamic_memdump_enable = 1;
+static int dynamic_memdump_enable;
 
 /**
  * reset_sprs_dump_table - reset the sprs dump table
@@ -870,7 +870,7 @@ static struct msm_dump_table *msm_dump_get_table(enum msm_dump_table_ids id)
 static int msm_dump_data_add_minidump(struct msm_dump_entry *entry)
 {
 	struct msm_dump_data *data;
-	struct md_region md_entry;
+	struct md_region md_entry = {};
 
 	data = (struct msm_dump_data *)(phys_to_virt(entry->addr));
 
@@ -1192,6 +1192,13 @@ static int mem_dump_alloc(struct platform_device *pdev, struct device_node *node
 
 	total_size += mem_dump_calc_dump_total_size(node);
 	total_size = ALIGN(total_size, SZ_4K);
+	if (*rmem_offset > rmem->size ||
+	    total_size > rmem->size - *rmem_offset) {
+		dev_err(&pdev->dev,
+			"no memory for %pOF: size=%zu, offset=%zu, rmem_size=%llu\n",
+			node, total_size, *rmem_offset, rmem->size);
+		return -ENOMEM;
+	}
 
 	phys_addr = rmem->base + *rmem_offset;
 	dump_vaddr = memremap(phys_addr, total_size, MEMREMAP_WB);
@@ -1452,6 +1459,14 @@ static int dynamic_mem_dump_alloc(struct platform_device *pdev, struct device_no
 		if (!total_size)
 			continue;
 		total_size = ALIGN(total_size, PAGE_SIZE);
+		if (used_size > rmem->size ||
+		    total_size > rmem->size - used_size) {
+			dev_err(&pdev->dev,
+				"no memory for %pOF: size=%zu, offset=%zu, rmem_size=%llu\n",
+				child_node, total_size, used_size, rmem->size);
+			of_node_put(child_node);
+			return -ENOMEM;
+		}
 		dump_info = devm_kzalloc(&pdev->dev, sizeof(*dump_info), GFP_KERNEL);
 		if (!dump_info)
 			continue;
@@ -1463,12 +1478,6 @@ static int dynamic_mem_dump_alloc(struct platform_device *pdev, struct device_no
 		dump_info->active = true;
 		mutex_init(&dump_info->mutex);
 		used_size += total_size;
-		if (used_size > rmem->base + rmem->size) {
-			dev_err(&pdev->dev, "no memory, rmem_size: %llu, used_size: %ld\n",
-					rmem->size, used_size);
-			of_node_put(child_node);
-			return -ENOMEM;
-		}
 		list_add(&dump_info->link, &dynamic_dump_list);
 	}
 
@@ -1483,19 +1492,17 @@ static int set_dynamic_memdump(const char *val, const struct kernel_param *kp)
 	struct memdump_info *dump_info, *tmp;
 	int ret = 0;
 
-	if (sscanf(val, "%du", &enable) != 1)
+	if (kstrtoint(val, 0, &enable))
 		return -EINVAL;
 
-	dynamic_memdump_enable = !!enable;
-	if (!dynamic_memdump_enable)
-		return 0;
-
-	list_for_each_entry_safe(dump_info, tmp, &dynamic_dump_list, link) {
-		ret = dynamic_mem_dump_enable(dump_info);
-		if (ret)
-			break;
+	if (enable) {
+		list_for_each_entry_safe(dump_info, tmp, &dynamic_dump_list, link) {
+			ret = dynamic_mem_dump_enable(dump_info);
+			if (ret)
+				return ret;
+		}
+		dynamic_memdump_enable = 1;
 	}
-
 	return 0;
 }
 #else
@@ -1531,7 +1538,7 @@ static int mem_dump_probe(struct platform_device *pdev)
 	size_t free_size, used_size;
 	void *memdump_vaddr;
 	phys_addr_t phys_addr;
-	struct md_region md_entry;
+	struct md_region md_entry = {};
 
 	ret = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(64));
 	if (ret < 0)
@@ -1551,6 +1558,10 @@ static int mem_dump_probe(struct platform_device *pdev)
 
 	used_size = sizeof(struct msm_dump_table) * 2;
 	used_size = ALIGN(used_size, SZ_4K);
+	if (used_size > rmem->size) {
+		dev_err(&pdev->dev, "reserved memory is too small\n");
+		return -ENOMEM;
+	}
 	phys_addr = rmem->base;
 	memdump_vaddr = memremap(phys_addr, used_size, MEMREMAP_WB);
 	if (!memdump_vaddr)
@@ -1575,20 +1586,6 @@ static int mem_dump_probe(struct platform_device *pdev)
 				dev_err(&pdev->dev, "static dump alloc failed\n");
 		}
 	}
-
-#ifdef CONFIG_QCOM_DYNAMIC_MEMORY_DUMP
-	if (dynamic_memdump_enable) {
-		struct memdump_info *dump_info;
-
-		list_for_each_entry(dump_info, &dynamic_dump_list, link) {
-			ret = dynamic_mem_dump_enable(dump_info);
-			if (ret)
-				dev_err(&pdev->dev,
-					"failed to enable dynamic dump %s: %d\n",
-					dump_info->name, ret);
-		}
-	}
-#endif
 
 	free_size = rmem->size - used_size;
 	if (free_size > 0)

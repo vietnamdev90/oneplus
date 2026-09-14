@@ -119,6 +119,11 @@ static int md_update_ss_toc(int regno, const struct md_region *entry)
 				entry->name);
 		return ret;
 	}
+	if (ret != regno) {
+		printk_deferred("Region index does not match entry %s\n",
+				entry->name);
+		return -EINVAL;
+	}
 
 	mdr = &minidump_table.entry[regno];
 	mdr->virt_addr = entry->virt_addr;
@@ -153,6 +158,10 @@ static int md_remove_ss_toc(const struct md_region *entry)
 		return -EINVAL;
 	}
 	rcount = minidump_table.md_ss_toc->ss_region_count;
+	ret = msm_minidump_clear_headers(entry);
+	if (ret)
+		return ret;
+
 	if (first_removed_entry > entryno)
 		first_removed_entry = entryno;
 	minidump_table.md_ss_toc->md_ss_toc_init = 0;
@@ -167,10 +176,6 @@ static int md_remove_ss_toc(const struct md_region *entry)
 		((rcount - rgno - 1) * sizeof(struct md_ss_region)));
 	memset(&minidump_table.md_regions[rcount - 1], 0,
 	       sizeof(struct md_ss_region));
-
-	ret = msm_minidump_clear_headers(entry);
-	if (ret)
-		return ret;
 
 	minidump_table.md_ss_toc->ss_region_count--;
 	minidump_table.md_ss_toc->md_ss_toc_init = 1;
@@ -189,7 +194,7 @@ static int md_smem_init_md_table(void)
 					  SBL_MINIDUMP_SMEM_ID, &size);
 	if (IS_ERR_OR_NULL(md_global_toc)) {
 		pr_err("SMEM is not initialized\n");
-		return PTR_ERR(md_global_toc);
+		return md_global_toc ? PTR_ERR(md_global_toc) : -ENODEV;
 	}
 
 	/*Check global minidump support initialization */
@@ -206,7 +211,7 @@ static int md_smem_init_md_table(void)
 	md_ss_toc->encryption_required = MD_SS_ENCR_NOTREQ;
 
 	minidump_table.md_ss_toc = md_ss_toc;
-	minidump_table.md_regions = kzalloc((MAX_NUM_ENTRIES *
+	minidump_table.md_regions = kzalloc(((MAX_NUM_ENTRIES + 1) *
 				sizeof(struct md_ss_region)), GFP_KERNEL);
 	if (!minidump_table.md_regions)
 		return -ENOMEM;
@@ -308,7 +313,8 @@ static int md_smem_add_region(const struct md_region *entry)
 	if (minidump_table.md_ss_toc &&
 	    (minidump_table.md_ss_toc->md_ss_enable_status == MD_SS_ENABLED)) {
 		toc_init = 1;
-		if (minidump_table.md_ss_toc->ss_region_count >= MAX_NUM_ENTRIES) {
+		if (minidump_table.md_ss_toc->ss_region_count >=
+		    MAX_NUM_ENTRIES + 1) {
 			printk_deferred("Maximum regions in minidump table reached\n");
 			ret = -ENOMEM;
 			goto out;
@@ -351,12 +357,15 @@ static int md_smem_update_region(int regno, const struct md_region *entry)
 	int ret = 0;
 	unsigned long flags;
 
-	read_lock_irqsave(&mdt_remove_lock, flags);
+	spin_lock_irqsave(&mdt_lock, flags);
+	read_lock(&mdt_remove_lock);
 
 	ret = md_update_ss_toc(regno, entry);
-	md_smem_update_elf_header(regno, entry);
+	if (!ret)
+		md_smem_update_elf_header(regno, entry);
 
-	read_unlock_irqrestore(&mdt_remove_lock, flags);
+	read_unlock(&mdt_remove_lock);
+	spin_unlock_irqrestore(&mdt_lock, flags);
 
 	return ret;
 }

@@ -49,7 +49,8 @@ inline char *elf_lookup_string(struct elfhdr *hdr, int offset)
 {
 	char *strtab = elf_str_table(hdr);
 
-	if ((strtab == NULL) || (minidump_elfheader.strtable_idx < offset))
+	if (!strtab || offset < 0 ||
+	    offset >= minidump_elfheader.strtable_idx)
 		return NULL;
 	return strtab + offset;
 }
@@ -58,17 +59,21 @@ EXPORT_SYMBOL_GPL(elf_lookup_string);
 inline unsigned int set_section_name(const char *name)
 {
 	char *strtab = elf_str_table(minidump_elfheader.ehdr);
-	int idx = minidump_elfheader.strtable_idx;
-	int ret = 0;
+	size_t len;
+	unsigned int idx = minidump_elfheader.strtable_idx;
 
 	if ((strtab == NULL) || (name == NULL))
 		return 0;
 
-	ret = idx;
-	idx += strscpy((strtab + idx), name, MAX_REGION_NAME_LENGTH);
-	minidump_elfheader.strtable_idx = idx + 1;
+	len = strnlen(name, MAX_REGION_NAME_LENGTH);
+	if (len == MAX_REGION_NAME_LENGTH ||
+	    idx + len + 1 > MAX_STRTBL_SIZE)
+		return 0;
 
-	return ret;
+	memcpy(strtab + idx, name, len + 1);
+	minidump_elfheader.strtable_idx = idx + len + 1;
+
+	return idx;
 }
 EXPORT_SYMBOL_GPL(set_section_name);
 
@@ -152,7 +157,7 @@ int msm_minidump_clear_headers(const struct md_region *entry)
 	/* Clear name in string table */
 	strln = strlen(shname) + 1;
 	memmove(shname, shname + strln,
-		(minidump_elfheader.strtable_idx - shdr->sh_name));
+		minidump_elfheader.strtable_idx - shdr->sh_name - strln);
 	minidump_elfheader.strtable_idx -= strln;
 
 	/* Clear program header */
@@ -209,8 +214,9 @@ static inline int validate_region(const struct md_region *entry)
 	if (!entry)
 		return -EINVAL;
 
-	if ((strlen(entry->name) > MAX_NAME_LENGTH) || !entry->virt_addr ||
-		(!IS_ALIGNED(entry->size, 4))) {
+	if (!entry->name[0] ||
+	    strnlen(entry->name, sizeof(entry->name)) == sizeof(entry->name) ||
+	    !entry->virt_addr || !entry->size || !IS_ALIGNED(entry->size, 4)) {
 		printk_deferred("Invalid entry details\n");
 		return -EINVAL;
 	}
@@ -227,7 +233,7 @@ int msm_minidump_update_region(int regno, const struct md_region *entry)
 	if (!smp_load_acquire(&md_init_done))
 		return -EINVAL;
 
-	if (validate_region(entry) || (regno >= MAX_NUM_ENTRIES))
+	if (validate_region(entry) || regno < 0 || regno >= MAX_NUM_ENTRIES)
 		return -EINVAL;
 
 	if (md_core.ops)
@@ -284,7 +290,7 @@ int msm_minidump_remove_region(const struct md_region *entry)
 {
 	int ret;
 
-	if (!entry)
+	if (validate_region(entry))
 		return -EINVAL;
 
 	/* Ensure that init completes before we remove regions */
@@ -318,8 +324,7 @@ static int msm_minidump_add_header(void)
 	 */
 	elfh_size = sizeof(*ehdr) + MAX_STRTBL_SIZE +
 			(strlen(linux_banner) + 1) +
-			((sizeof(*shdr) + sizeof(*phdr))
-			 * (MAX_NUM_ENTRIES + 4));
+			((sizeof(*shdr) + sizeof(*phdr)) * MAX_ELF_ENTRIES);
 
 	elfh_size = ALIGN(elfh_size, 4);
 
@@ -331,8 +336,8 @@ static int msm_minidump_add_header(void)
 	/* Assign section/program headers offset */
 	minidump_elfheader.shdr = shdr = (struct elf_shdr *)(ehdr + 1);
 	minidump_elfheader.phdr = phdr =
-				 (struct elf_phdr *)(shdr + MAX_NUM_ENTRIES);
-	phdr_off = sizeof(*ehdr) + (sizeof(*shdr) * MAX_NUM_ENTRIES);
+				 (struct elf_phdr *)(shdr + MAX_ELF_ENTRIES);
+	phdr_off = sizeof(*ehdr) + (sizeof(*shdr) * MAX_ELF_ENTRIES);
 
 	memcpy(ehdr->e_ident, ELFMAG, SELFMAG);
 	ehdr->e_ident[EI_CLASS] = ELF_CLASS;
@@ -357,7 +362,7 @@ static int msm_minidump_add_header(void)
 	 */
 	minidump_elfheader.strtable_idx = 1;
 	strtbl_off = sizeof(*ehdr) +
-			((sizeof(*phdr) + sizeof(*shdr)) * MAX_NUM_ENTRIES);
+			((sizeof(*phdr) + sizeof(*shdr)) * MAX_ELF_ENTRIES);
 	shdr++;
 	shdr->sh_type = SHT_STRTAB;
 	shdr->sh_offset = (elf_addr_t)strtbl_off;

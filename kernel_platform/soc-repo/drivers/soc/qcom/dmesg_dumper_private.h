@@ -82,10 +82,12 @@ struct ddump_shm_hdr {
  * @rx_dbl: The gunyah doorbell rx handler
  * @ddump_completion: The completion for synchronization when dump
  *                    alive log
+ * @read_lock: Serializes alive-log requests and their completion state
  * @wakeup_source: Avoid system enter suspend when dump alive log
  * @md_entry: minidump entry
  * @is_static: The shared memory is from carve out or not
  * @is_ready: The vm is ready to get alive log or not
+ * @md_registered: The VM log region is present in the minidump table
  * @prec_time: The record of SVM kime and pvm_svm_offset in PVM
  *              side
  */
@@ -102,11 +104,13 @@ struct qcom_dmesg_dumper {
 	void *tx_dbl;
 	void *rx_dbl;
 	struct completion ddump_completion;
+	struct mutex read_lock;
 	struct wakeup_source *wakeup_source;
 	struct notifier_block gh_panic_nb;
 	struct md_region md_entry;
 	bool is_static;
 	bool is_ready;
+	bool md_registered;
 	struct record_time *rec_time;
 };
 

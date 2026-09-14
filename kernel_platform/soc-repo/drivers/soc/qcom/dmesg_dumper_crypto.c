@@ -207,16 +207,19 @@ static int qcom_ddump_do_alive_log_encrypt(u8 *log, u64 log_size,
 	ret = qcom_ddump_encrypt_key_with_rsa(key, KEY_LEN, output_data);
 	if (ret) {
 		pr_err("Error encrypt key with rsa: %d\n", ret);
-		return ret;
+		goto out_zero_key;
 	}
 
 	ret = qcom_ddump_encrypt_log_with_gcm(log, log_size, key, KEY_LEN, output_data);
 	if (ret) {
 		pr_err("Error encrypt log with gcm: %d\n", ret);
-		return ret;
+		goto out_zero_key;
 	}
 
 	output_data->frame_size = sizeof(*output_data) + log_size + TAG_LEN;
+
+out_zero_key:
+	memzero_explicit(key, sizeof(key));
 	return ret;
 }
 

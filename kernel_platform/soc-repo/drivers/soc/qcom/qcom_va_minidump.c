@@ -41,6 +41,8 @@ struct va_md_elf_info {
 #define MAX_ELF_SECTION		0xFFFFU
 
 struct va_minidump_data {
+	struct device *dev;
+	dma_addr_t dma_handle;
 	phys_addr_t mem_phys_addr;
 	unsigned int total_mem_size;
 	unsigned long elf_mem;
@@ -115,8 +117,14 @@ static const struct sysfs_ops va_md_sysfs_ops = {
 	.store  = attr_store,
 };
 
+static void va_md_kobj_release(struct kobject *kobj)
+{
+	kfree(to_va_md_s_data(kobj));
+}
+
 static const struct kobj_type va_md_kobj_type = {
 	.sysfs_ops      = &va_md_sysfs_ops,
+	.release	= va_md_kobj_release,
 };
 
 static ssize_t enable_show(struct kobject *kobj, struct attribute *this, char *buf)
@@ -168,7 +176,10 @@ int qcom_va_md_register(const char *name, struct notifier_block *nb)
 	int ret = 0;
 	struct va_md_s_data *va_md_s_data;
 	struct notifier_block_list *nbl, *temp_nbl;
-	struct kobject *kobj;
+	struct kobject *kobj = NULL;
+
+	if (!name || !name[0] || !nb || !nb->notifier_call)
+		return -EINVAL;
 
 	if (!qcom_va_md_enabled()) {
 		pr_err("qcom va minidump driver is not initialized\n");
@@ -184,7 +195,6 @@ int qcom_va_md_register(const char *name, struct notifier_block *nb)
 	kobj = kset_find_obj(va_md_data.va_md_kset, name);
 	if (kobj) {
 		pr_warn("subsystem: %s is already registered\n", name);
-		kobject_put(kobj);
 		va_md_s_data = to_va_md_s_data(kobj);
 		goto register_notifier;
 	}
@@ -233,6 +243,8 @@ register_notifier:
 	atomic_notifier_chain_register(&va_md_s_data->va_md_s_notif_list, &nbl->nb);
 	list_add_tail(&nbl->nb_list, &va_md_s_data->va_md_s_nb_list);
 out:
+	if (kobj)
+		kobject_put(kobj);
 	mutex_unlock(&va_md_lock);
 	return ret;
 }
@@ -245,6 +257,9 @@ int qcom_va_md_unregister(const char *name, struct notifier_block *nb)
 	struct kobject *kobj;
 	int ret = 0;
 	bool found = false;
+
+	if (!name || !nb || !nb->notifier_call)
+		return -EINVAL;
 
 	if (!qcom_va_md_enabled()) {
 		pr_err("qcom va minidump driver is not initialized\n");
@@ -259,7 +274,6 @@ int qcom_va_md_unregister(const char *name, struct notifier_block *nb)
 		return -EINVAL;
 	}
 	va_md_s_data = to_va_md_s_data(kobj);
-	kobject_put(kobj);
 
 	list_for_each_entry_safe(nbl, tmpnbl, &va_md_s_data->va_md_s_nb_list, nb_list) {
 		if (nbl->nb.notifier_call == nb->notifier_call) {
@@ -276,13 +290,12 @@ int qcom_va_md_unregister(const char *name, struct notifier_block *nb)
 		pr_warn("subsystem:%s callback is not registered\n", name);
 		ret = -EINVAL;
 	} else if (list_empty(&va_md_s_data->va_md_s_nb_list)) {
-		list_del(&va_md_s_data->va_md_s_nb_list);
 		sysfs_remove_group(&va_md_s_data->s_kobj, &va_md_s_attr_group);
-		kobject_put(&va_md_s_data->s_kobj);
 		list_del(&va_md_s_data->va_md_s_list);
-		kfree(va_md_s_data);
+		kobject_put(&va_md_s_data->s_kobj);
 	}
 
+	kobject_put(kobj);
 	mutex_unlock(&va_md_lock);
 	return ret;
 }
@@ -292,7 +305,7 @@ static void va_md_add_entry(struct va_md_entry *entry)
 {
 	struct va_md_tree_node *dst = ((struct va_md_tree_node *)va_md_data.elf_mem) +
 					va_md_data.num_sections;
-	unsigned int len = strlen(entry->owner);
+	unsigned int len = strnlen(entry->owner, MAX_OWNER_STRING);
 
 	dst->entry = *entry;
 	WARN_ONCE(len > MAX_OWNER_STRING - 1,
@@ -367,77 +380,55 @@ static bool va_md_move_right(struct va_md_entry *entry, unsigned int index)
 static int va_md_tree_insert(struct va_md_entry *entry)
 {
 	unsigned int baseindex = 0;
-	int ret = 0;
-	static int num_nodes;
 	struct va_md_tree_node *tree = (struct va_md_tree_node *)va_md_data.elf_mem;
 
 	if (!entry->vaddr || !va_md_data.num_sections) {
 		va_md_add_entry(entry);
-		goto out;
+		return 0;
 	}
 
-	while (baseindex < va_md_data.num_sections) {
-		if ((tree[baseindex].lindex == VA_MD_CB_MARKER) &&
-			(tree[baseindex].rindex == VA_MD_CB_MARKER)) {
-			baseindex++;
-			continue;
-		}
+	while (baseindex < va_md_data.num_sections && !tree[baseindex].entry.vaddr)
+		baseindex++;
 
+	if (baseindex == va_md_data.num_sections) {
+		va_md_add_entry(entry);
+		return 0;
+	}
+
+	for (;;) {
 		if (va_md_check_overlap(entry, baseindex)) {
-			entry->owner[MAX_OWNER_STRING - 1] = '\0';
 			pr_err("Overlapping region owner:%s\n", entry->owner);
-			ret = -EINVAL;
-			goto out;
+			return -EINVAL;
 		}
 
 		if (va_md_move_left(entry, baseindex)) {
-			if (tree[baseindex].lindex == VA_MD_VADDR_MARKER) {
-				tree[baseindex].lindex = va_md_data.num_sections;
-				va_md_add_entry(entry);
-				num_nodes++;
-				goto exit_loop;
-			} else {
+			if (tree[baseindex].lindex != VA_MD_VADDR_MARKER) {
 				baseindex = tree[baseindex].lindex;
 				continue;
 			}
-
+			tree[baseindex].lindex = va_md_data.num_sections;
 		} else if (va_md_move_right(entry, baseindex)) {
-			if (tree[baseindex].rindex == VA_MD_VADDR_MARKER) {
-				tree[baseindex].rindex = va_md_data.num_sections;
-				va_md_add_entry(entry);
-				num_nodes++;
-				goto exit_loop;
-			} else {
+			if (tree[baseindex].rindex != VA_MD_VADDR_MARKER) {
 				baseindex = tree[baseindex].rindex;
 				continue;
 			}
+			tree[baseindex].rindex = va_md_data.num_sections;
 		} else {
-			pr_err("Warning: Corrupted Binary Search Tree\n");
+			return -EINVAL;
 		}
-	}
-
-exit_loop:
-	if (!num_nodes) {
 		va_md_add_entry(entry);
-		num_nodes++;
+		return 0;
 	}
-
-out:
-	return ret;
 }
 
 static bool va_md_overflow_check(void)
 {
-	unsigned long end_addr;
-	unsigned long start_addr = va_md_data.elf_mem;
-
-	start_addr += sizeof(struct va_md_tree_node) * va_md_data.num_sections;
-	end_addr = start_addr + sizeof(struct va_md_tree_node) - 1;
-
-	if (end_addr > va_md_data.elf_mem + va_md_data.total_mem_size - 1)
+	if (va_md_data.total_mem_size < sizeof(struct va_md_tree_node))
 		return true;
-	else
-		return false;
+
+	return va_md_data.num_sections >
+		(va_md_data.total_mem_size - sizeof(struct va_md_tree_node)) /
+		sizeof(struct va_md_tree_node);
 }
 
 int qcom_va_md_add_region(struct va_md_entry *entry)
@@ -445,13 +436,17 @@ int qcom_va_md_add_region(struct va_md_entry *entry)
 	if (!va_md_data.in_oops_handler)
 		return -EINVAL;
 
-	if ((!entry->vaddr == !entry->cb) || (entry->size <= 0)) {
+	if (!entry || strnlen(entry->owner, MAX_OWNER_STRING) == MAX_OWNER_STRING)
+		return -EINVAL;
+
+	if ((!entry->vaddr == !entry->cb) || !entry->size ||
+	    (entry->vaddr && entry->size - 1 > ULONG_MAX - entry->vaddr)) {
 		entry->owner[MAX_OWNER_STRING - 1] = '\0';
 		pr_err("Invalid entry from owner:%s\n", entry->owner);
 		return -EINVAL;
 	}
 
-	if (va_md_data.num_sections > MAX_ELF_SECTION) {
+	if (va_md_data.num_sections >= MAX_ELF_SECTION) {
 		pr_err("MAX_ELF_SECTION reached\n");
 		return -ENOSPC;
 	}
@@ -584,7 +579,8 @@ static void qcom_va_add_hdrs(void)
 
 static int qcom_va_md_calc_size(unsigned int shdr_cnt)
 {
-	unsigned int len, size = 0;
+	unsigned int len;
+	unsigned long size = 0;
 	static unsigned long tot_size;
 	struct va_md_tree_node *arr = (struct va_md_tree_node *)va_md_data.elf_mem;
 
@@ -597,7 +593,8 @@ static int qcom_va_md_calc_size(unsigned int shdr_cnt)
 	len = strlen(arr[shdr_cnt].entry.owner);
 	size += (sizeof(struct elf_shdr) + sizeof(struct elf_phdr) +
 		arr[shdr_cnt].entry.size + len + 1);
-	if (tot_size  > va_md_data.total_mem_size - size) {
+	if (size > va_md_data.total_mem_size ||
+	    tot_size > va_md_data.total_mem_size - size) {
 		pr_err("Total CMA consumed, no space left\n");
 		return -ENOSPC;
 	}
@@ -713,25 +710,30 @@ static int qcom_va_md_reserve_mem(struct device *dev)
 	int ret = 0;
 
 	node = of_parse_phandle(dev->of_node, "memory-region", 0);
-	if (node) {
-		ret = of_reserved_mem_device_init_by_idx(dev, dev->of_node, 0);
-		of_node_put(dev->of_node);
-		if (ret) {
-			pr_err("Failed to initialize CMA mem, ret %d\n",
-				ret);
-			goto out;
-		}
+	if (!node)
+		return -ENODEV;
+
+	ret = of_reserved_mem_device_init_by_idx(dev, dev->of_node, 0);
+	if (ret) {
+		pr_err("Failed to initialize CMA mem, ret %d\n", ret);
+		goto out_put_node;
 	}
 
 	ret = of_property_read_u32_array(node, "size", size, 2);
 	if (ret) {
 		pr_err("Failed to get size of CMA, ret %d\n", ret);
-		goto out;
+		of_reserved_mem_device_release(dev);
+		goto out_put_node;
 	}
 
 	va_md_data.total_mem_size = size[1];
+	if (!va_md_data.total_mem_size) {
+		of_reserved_mem_device_release(dev);
+		ret = -EINVAL;
+	}
 
-out:
+out_put_node:
+	of_node_put(node);
 	return ret;
 }
 
@@ -739,6 +741,11 @@ static void qcom_va_md_driver_remove(struct platform_device *pdev)
 {
 	struct va_md_s_data *va_md_s_data, *tmp;
 	struct notifier_block_list *nbl, *tmpnbl;
+
+	/* Stop new clients before tearing down the kset and backing memory. */
+	smp_store_release(&va_md_data.va_md_init, false);
+	atomic_notifier_chain_unregister(&panic_notifier_list, &qcom_va_md_elf_panic_blk);
+	atomic_notifier_chain_unregister(&panic_notifier_list, &qcom_va_md_panic_blk);
 
 	mutex_lock(&va_md_lock);
 	list_for_each_entry_safe(va_md_s_data, tmp, &va_md_data.va_md_list, va_md_s_list) {
@@ -749,27 +756,24 @@ static void qcom_va_md_driver_remove(struct platform_device *pdev)
 			kfree(nbl);
 		}
 
-		list_del(&va_md_s_data->va_md_s_nb_list);
 		sysfs_remove_group(&va_md_s_data->s_kobj, &va_md_s_attr_group);
-		kobject_put(&va_md_s_data->s_kobj);
 		list_del(&va_md_s_data->va_md_s_list);
-		kfree(va_md_s_data);
+		kobject_put(&va_md_s_data->s_kobj);
 	}
 
 	mutex_unlock(&va_md_lock);
 	kset_unregister(va_md_data.va_md_kset);
-	atomic_notifier_chain_unregister(&panic_notifier_list, &qcom_va_md_elf_panic_blk);
-	atomic_notifier_chain_unregister(&panic_notifier_list, &qcom_va_md_panic_blk);
-	vunmap((void *)va_md_data.elf_mem);
+	if (va_md_data.va_md_minidump_reg)
+		msm_minidump_remove_region(&va_md_data.md_entry);
+	dma_free_coherent(va_md_data.dev, va_md_data.total_mem_size,
+			  (void *)va_md_data.elf_mem, va_md_data.dma_handle);
+	of_reserved_mem_device_release(va_md_data.dev);
 }
 
 static int qcom_va_md_driver_probe(struct platform_device *pdev)
 {
 	int ret = 0;
-	int i;
 	void *vaddr;
-	int count;
-	struct page **pages, *page;
 	dma_addr_t dma_handle;
 
 	ret = dma_set_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(64));
@@ -786,39 +790,50 @@ static int qcom_va_md_driver_probe(struct platform_device *pdev)
 				   GFP_KERNEL);
 	if (!vaddr) {
 		ret = -ENOMEM;
-		goto out;
+		goto err_release_reserved;
 	}
 
-	dma_free_coherent(&pdev->dev, va_md_data.total_mem_size, vaddr, dma_handle);
-	page = phys_to_page(dma_to_phys(&pdev->dev, dma_handle));
-	count = PAGE_ALIGN(va_md_data.total_mem_size) >> PAGE_SHIFT;
-	pages = kmalloc_array(count, sizeof(struct page *), GFP_KERNEL);
-	if (!pages)
-		return -ENOMEM;
-
-	for (i = 0; i < count; i++)
-		pages[i] = nth_page(page, i);
-
-	vaddr = vmap(pages, count, VM_DMA_COHERENT, pgprot_dmacoherent(PAGE_KERNEL));
-	kfree(pages);
-
+	memset(vaddr, 0, va_md_data.total_mem_size);
+	va_md_data.dev = &pdev->dev;
+	va_md_data.dma_handle = dma_handle;
 	va_md_data.mem_phys_addr = dma_to_phys(&pdev->dev, dma_handle);
 	va_md_data.elf_mem = (unsigned long)vaddr;
+	va_md_data.num_sections = 0;
+	va_md_data.va_md_minidump_reg = false;
+	va_md_data.in_oops_handler = false;
 
-	atomic_notifier_chain_register(&panic_notifier_list, &qcom_va_md_panic_blk);
-	atomic_notifier_chain_register(&panic_notifier_list, &qcom_va_md_elf_panic_blk);
+	ret = atomic_notifier_chain_register(&panic_notifier_list,
+					     &qcom_va_md_panic_blk);
+	if (ret)
+		goto err_free_dma;
+
+	ret = atomic_notifier_chain_register(&panic_notifier_list,
+					     &qcom_va_md_elf_panic_blk);
+	if (ret)
+		goto err_unregister_panic;
 
 	INIT_LIST_HEAD(&va_md_data.va_md_list);
 	va_md_data.va_md_kset = kset_create_and_add("va-minidump", NULL, kernel_kobj);
 	if (!va_md_data.va_md_kset) {
 		dev_err(&pdev->dev, "Failed to create kset for va-minidump\n");
-		vunmap((void *)va_md_data.elf_mem);
 		ret = -ENOMEM;
-		goto out;
+		goto err_unregister_elf_panic;
 	}
 
 	/* All updates above should be visible, before init completes */
 	smp_store_release(&va_md_data.va_md_init, true);
+	return 0;
+
+err_unregister_elf_panic:
+	atomic_notifier_chain_unregister(&panic_notifier_list,
+					       &qcom_va_md_elf_panic_blk);
+err_unregister_panic:
+	atomic_notifier_chain_unregister(&panic_notifier_list,
+					       &qcom_va_md_panic_blk);
+err_free_dma:
+	dma_free_coherent(&pdev->dev, va_md_data.total_mem_size, vaddr, dma_handle);
+err_release_reserved:
+	of_reserved_mem_device_release(&pdev->dev);
 out:
 	return ret;
 }

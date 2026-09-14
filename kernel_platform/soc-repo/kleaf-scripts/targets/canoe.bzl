@@ -43,12 +43,17 @@ def define_canoe():
             board_kernel_cmdline_extras += [
                 "nosoftlockup console=ttynull qcom_geni_serial.con_enabled=0",
                 "kasan=off page_owner=off schedstats=disable",
+                "enforcing=0",
             ]
             kernel_vendor_cmdline_extras += [
                 "nosoftlockup console=ttynull qcom_geni_serial.con_enabled=0",
                 "kasan=off page_owner=off schedstats=disable",
+                "enforcing=0",
             ]
-            board_bootconfig_extras += ["androidboot.serialconsole=0"]
+            board_bootconfig_extras += [
+                "androidboot.selinux=permissive",
+                "androidboot.serialconsole=0",
+            ]
 
             perf_build_img_opts = boot_image_opts(
                 earlycon_addr = "qcom_geni,0x00a9c000",

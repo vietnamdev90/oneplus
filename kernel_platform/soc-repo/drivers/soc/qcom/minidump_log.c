@@ -31,6 +31,7 @@
 #include "debug_symbol.h"
 #include <linux/version.h>
 #ifdef CONFIG_QCOM_MINIDUMP_PSTORE
+#include <linux/log2.h>
 #include <linux/math64.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
@@ -80,6 +81,7 @@
 struct md_stack_cpu_data {
 	int stack_mdidx[STACK_NUM_PAGES];
 	struct md_region stack_mdr[STACK_NUM_PAGES];
+	void *clear_buf[STACK_NUM_PAGES];
 } ____cacheline_aligned_in_smp;
 
 static int md_current_stack_init __read_mostly;
@@ -91,6 +93,8 @@ struct md_suspend_context_data {
 	int stack_mdidx[STACK_NUM_PAGES];
 	struct md_region stack_mdr[STACK_NUM_PAGES];
 	struct md_region task_mdr;
+	void *stack_clear_buf[STACK_NUM_PAGES];
+	void *task_clear_buf;
 	bool init;
 };
 
@@ -192,7 +196,7 @@ static int register_stack_entry(struct md_region *ksp_entry, u64 sp, u64 size)
 
 static void register_kernel_sections(void)
 {
-	struct md_region ksec_entry;
+	struct md_region ksec_entry = {};
 	char *data_name = "KDATABSS";
 	char *rodata_name = "KROAIDATA";
 	size_t static_size;
@@ -264,7 +268,7 @@ static unsigned int calculate_copy_pages(u64 sp, struct vm_struct *stack_area)
 
 void dump_stack_minidump(u64 sp)
 {
-	struct md_region ksp_entry, ktsk_entry;
+	struct md_region ksp_entry = {}, ktsk_entry = {};
 	u32 cpu = smp_processor_id();
 	struct vm_struct *stack_vm_area;
 	unsigned int i, copy_pages;
@@ -597,7 +601,7 @@ static void register_irq_stack(void)
 	unsigned int i;
 	int irq_stack_pages_count;
 	u64 irq_stack_base;
-	struct md_region irq_sp_entry;
+	struct md_region irq_sp_entry = {};
 	u64 sp;
 	u64 *irq_stack_ptr = DEBUG_SYMBOL_LOOKUP(irq_stack_ptr);
 
@@ -682,7 +686,7 @@ static void md_dump_trace_buf(void *unused, struct trace_seq *trace_buf,
 
 static void md_register_trace_buf(void)
 {
-	struct md_region md_entry;
+	struct md_region md_entry = {};
 	void *buffer_start;
 
 	buffer_start = kzalloc(MD_FTRACE_BUF_SIZE, GFP_KERNEL);
@@ -896,7 +900,7 @@ static int update_task_info_entry(size_t new_size)
 {
 	int ret;
 	char *buf;
-	struct md_region md_entry;
+	struct md_region md_entry = {};
 
 	scnprintf(md_entry.name, sizeof(md_entry.name), "KRUNQUEUE");
 	md_entry.virt_addr = (u64)md_runq_seq_buf->buffer;
@@ -1321,7 +1325,7 @@ static struct notifier_block md_panic_blk = {
 static int md_register_minidump_entry(char *name, u64 virt_addr,
 				      u64 phys_addr, u64 size)
 {
-	struct md_region md_entry;
+	struct md_region md_entry = {};
 	int ret;
 
 	strscpy(md_entry.name, name, sizeof(md_entry.name));
@@ -1550,7 +1554,7 @@ static void log_cpu_freq(void *unused,
 static void register_cpufreq_log(void)
 {
 	int cpu;
-	struct md_region md_entry;
+	struct md_region md_entry = {};
 	size_t freq_hist_sz;
 
 	for_each_possible_cpu(cpu) {
@@ -1586,12 +1590,10 @@ static void register_pstore_info(void)
 	struct device_node *node, *tmp_node;
 	struct resource resource;
 	struct reserved_mem *rmem = NULL;
-	u32 record_size = 0, console_size = 0, ftrace_size = 0;
-	u32 pmsg_size = 0;
+	u32 record_size = 0, console_size = 0, ftrace_size = 0, pmsg_size = 0;
 	phys_addr_t paddr;
-	unsigned long total_size;
-	unsigned long dmesg_size;
-	struct md_region md_entry;
+	unsigned long aux_size, dmesg_size, total_size;
+	struct md_region md_entry = {};
 
 	node = tmp_node = of_find_compatible_node(NULL, NULL, "ramoops");
 	if (IS_ERR_OR_NULL(tmp_node)) {
@@ -1604,7 +1606,7 @@ static void register_pstore_info(void)
 		tmp_node = of_parse_phandle(node, "memory-region", 0);
 		if (!tmp_node) {
 			pr_err("Failed to parse ramoops memory-region\n");
-			return;
+			goto out_put_nodes;
 		}
 	}
 
@@ -1616,7 +1618,7 @@ static void register_pstore_info(void)
 			total_size = rmem->size;
 		} else {
 			pr_err("Failed to get ramoops mem\n");
-			return;
+			goto out_put_nodes;
 		}
 	} else {
 		paddr = resource.start;
@@ -1628,19 +1630,27 @@ static void register_pstore_info(void)
 	of_property_read_u32(node, "ftrace-size", &ftrace_size);
 	of_property_read_u32(node, "pmsg-size", &pmsg_size);
 
-	if ((unsigned long)console_size + ftrace_size + pmsg_size > total_size) {
-		pr_err("Invalid ramoops layout: auxiliary regions exceed reserved memory\n");
-		return;
-	}
+	if (record_size && !is_power_of_2(record_size))
+		record_size = rounddown_pow_of_two(record_size);
+	if (console_size && !is_power_of_2(console_size))
+		console_size = rounddown_pow_of_two(console_size);
+	if (ftrace_size && !is_power_of_2(ftrace_size))
+		ftrace_size = rounddown_pow_of_two(ftrace_size);
+	if (pmsg_size && !is_power_of_2(pmsg_size))
+		pmsg_size = rounddown_pow_of_two(pmsg_size);
 
-	/*
-	 * Ramoops uses all memory not reserved for console, pmsg and ftrace as
-	 * its dmesg area, then splits that area into record-size chunks.  Use
-	 * the complete dmesg area here so the following Minidump regions start
-	 * at the same addresses as the persistent RAM zones created by ramoops.
-	 */
-	dmesg_size = total_size - console_size - ftrace_size - pmsg_size;
-	if (record_size && dmesg_size >= record_size) {
+	aux_size = (unsigned long)console_size + ftrace_size + pmsg_size;
+	if (aux_size > total_size) {
+		pr_err("Invalid ramoops layout: regions exceed reserved memory\n");
+		goto out_put_nodes;
+	}
+	dmesg_size = total_size - aux_size;
+	if (record_size)
+		dmesg_size = rounddown(dmesg_size, (unsigned long)record_size);
+	else
+		dmesg_size = 0;
+
+	if (dmesg_size) {
 		strscpy(md_entry.name, "KDMESG", sizeof(md_entry.name));
 		md_entry.virt_addr = (uintptr_t)phys_to_virt(paddr);
 		md_entry.phys_addr = paddr;
@@ -1687,155 +1697,164 @@ static void register_pstore_info(void)
 
 		paddr += ftrace_size;
 	}
+
+out_put_nodes:
+	if (tmp_node != node)
+		of_node_put(tmp_node);
+	of_node_put(node);
 }
 #endif
 
-int clear_md_region(int regno,struct md_region *ksp_entry)
+#ifdef CONFIG_QCOM_DYN_MINIDUMP_STACK
+static int clear_md_region(int regno, struct md_region *entry, void **clear_buf)
 {
-        unsigned long tmpbuf;
-        int ret;
+	if (!*clear_buf) {
+		*clear_buf = kzalloc(entry->size, GFP_KERNEL);
+		if (!*clear_buf)
+			return -ENOMEM;
+	}
 
-        tmpbuf = get_zeroed_page(GFP_KERNEL);
-        if (NULL == (void *)tmpbuf) {
-                pr_err("md get_zeroed_page fail");
-                return -ENOMEM;
-        }
-        ksp_entry->virt_addr = tmpbuf;
-        ksp_entry->phys_addr = virt_to_phys((void *)tmpbuf);
-        ret = msm_minidump_update_region(regno,ksp_entry);
-        free_page(tmpbuf);
-        return ret;
+	entry->virt_addr = (uintptr_t)*clear_buf;
+	entry->phys_addr = virt_to_phys(*clear_buf);
+
+	return msm_minidump_update_region(regno, entry);
 }
 
-void clear_current_stack(void)
+static void clear_current_stack(void)
 {
 	struct md_stack_cpu_data *md_stack_cpu_d;
-	int ret = 0;
-	unsigned int cpu;
+	unsigned int cpu, i, nr_pages;
+	int ret;
 
-	unregister_trace_sched_switch(md_current_stack_notifer, NULL);
+	nr_pages = is_vmap_stack ? STACK_NUM_PAGES : 1;
 	for_each_possible_cpu(cpu) {
 		md_stack_cpu_d = &per_cpu(md_stack_data, cpu);
-		ret = clear_md_region(*(md_stack_cpu_d->stack_mdidx),md_stack_cpu_d->stack_mdr);
-		if (ret < 0)
-			pr_err("failed to clear current stack");
+		for (i = 0; i < nr_pages; i++) {
+			ret = clear_md_region(md_stack_cpu_d->stack_mdidx[i],
+					      &md_stack_cpu_d->stack_mdr[i],
+					      &md_stack_cpu_d->clear_buf[i]);
+			if (ret < 0)
+				pr_err("failed to clear current stack: %d\n", ret);
+		}
 	}
 }
-void clear_suspend_context(void)
+
+static void clear_suspend_context(void)
 {
-	int ret = 0;
-	ret = clear_md_region(*(md_suspend_context.stack_mdidx),md_suspend_context.stack_mdr);
+	unsigned int i, nr_pages = is_vmap_stack ? STACK_NUM_PAGES : 1;
+	int ret;
+
+	for (i = 0; i < nr_pages; i++) {
+		ret = clear_md_region(md_suspend_context.stack_mdidx[i],
+				      &md_suspend_context.stack_mdr[i],
+				      &md_suspend_context.stack_clear_buf[i]);
+		if (ret < 0)
+			pr_err("failed to clear suspend stack: %d\n", ret);
+	}
+
+	ret = clear_md_region(md_suspend_context.task_mdno,
+			      &md_suspend_context.task_mdr,
+			      &md_suspend_context.task_clear_buf);
 	if (ret < 0)
-		pr_err("failed to clear suspend  stack");
-	ret = clear_md_region(md_suspend_context.task_mdno,&md_suspend_context.task_mdr);
-	if (ret < 0)
-		pr_err("failed to clear suspend task");
+		pr_err("failed to clear suspend task: %d\n", ret);
 }
 static void unregister_current_stack(void)
 {
 	unregister_trace_sched_switch(md_current_stack_notifer, NULL);
-	if (md_stack_inited)
-	{
-		pr_err("start clean current_stack");
+	if (md_stack_inited) {
+		pr_info("start clean current_stack\n");
 		clear_current_stack();
 	}
-
 }
+
 static void unregister_suspend_context(void)
 {
 	unregister_pm_notifier(&minidump_pm_nb);
-	if (md_stack_inited)
-	{
-		pr_err("start clean suspend_context");
+	if (md_stack_inited) {
+		pr_info("start clean suspend_context\n");
 		clear_suspend_context();
 	}
 }
-static ssize_t current_stack_trigger(struct file *filp, const char *ubuf, size_t cnt, loff_t *data)
+
+static ssize_t current_stack_trigger(struct file *filp,
+		const char __user *ubuf, size_t cnt, loff_t *data)
 {
 	char buf[64];
-	int val = 0;
-	int ret = 0;
+	int val, ret;
 
-	if (cnt >= sizeof(buf)) {
+	if (cnt >= sizeof(buf))
 		return -EINVAL;
-	}
-	if (copy_from_user(&buf, ubuf, cnt)) {
+	if (copy_from_user(buf, ubuf, cnt))
 		return -EFAULT;
-	}
 	buf[cnt] = 0;
-	ret = kstrtoint(buf, 0, (int *)&val);
-	if (ret < 0) {
+	ret = kstrtoint(buf, 0, &val);
+	if (ret < 0)
 		return ret;
-	}
 
-	if ((!!val) && (current_stack_enable == false)) {
-		pr_info("current_stack enable");
-		if (md_stack_inited == false)
-		{
+	if (val && !current_stack_enable) {
+		pr_info("current_stack enable\n");
+		if (!md_stack_inited) {
 			register_current_stack();
 			register_suspend_context();
 			md_stack_inited = true;
-		}
-		else {
+		} else {
 			register_pm_notifier(&minidump_pm_nb);
 			register_trace_sched_switch(md_current_stack_notifer, NULL);
 		}
-		 current_stack_enable = true;
-	}
-	else if ((!val) && (current_stack_enable == true)) {
-		pr_info("current_stack disable");
+		current_stack_enable = true;
+	} else if (!val && current_stack_enable) {
+		pr_info("current_stack disable\n");
 		unregister_current_stack();
 		unregister_suspend_context();
 		current_stack_enable = false;
 	}
 	return cnt;
 }
-static ssize_t current_stack_show(struct file *file, char __user *buf,
-        size_t count,loff_t *off)
-{
-	char page[64] = {0};
-	int len = 0;
 
-	len = sprintf(&page[len], "=== current_stack_enable:%d ===\n", current_stack_enable);
-	if(len > *off)
-		len -= *off;
-	else
-		len = 0;
-	if(copy_to_user(buf,page,(len < count ? len : count))) {
-		return -EFAULT;
-	}
-	*off += len < count ? len : count;
-	return (len < count ? len : count);
+static ssize_t current_stack_show(struct file *file, char __user *buf,
+		size_t count, loff_t *off)
+{
+	char page[64];
+	int len;
+
+	len = scnprintf(page, sizeof(page),
+			"=== current_stack_enable:%d ===\n",
+			current_stack_enable);
+	return simple_read_from_buffer(buf, count, off, page, len);
 }
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 10, 0))
-    static const struct proc_ops current_stack_fops = {
-    .proc_read = current_stack_show,
-    .proc_write = current_stack_trigger,
-    .proc_lseek = seq_lseek,
-     };
+static const struct proc_ops current_stack_fops = {
+	.proc_read = current_stack_show,
+	.proc_write = current_stack_trigger,
+	.proc_lseek = default_llseek,
+};
 #else
-    struct file_operations current_stack_fops = {
-    .write       = current_stack_trigger,
-    .read        = current_stack_show,
-     };
+static const struct file_operations current_stack_fops = {
+	.read = current_stack_show,
+	.write = current_stack_trigger,
+	.llseek = default_llseek,
+};
 #endif
-/* #endif */
+#endif /* CONFIG_QCOM_DYN_MINIDUMP_STACK */
 
 int msm_minidump_log_init(void)
 {
-
-	/* #ifdef OPLUS_FEATURE_DFR */
+#ifdef CONFIG_QCOM_DYN_MINIDUMP_STACK
 	struct proc_dir_entry *pe;
+#endif
+
+	is_vmap_stack = IS_ENABLED(CONFIG_VMAP_STACK);
+
+#ifdef CONFIG_QCOM_DYN_MINIDUMP_STACK
 	pr_info("msm_minidump_log_init\n");
 	pe = proc_create("minidump_vcpu_stack", 0666, NULL, &current_stack_fops);
 	if (!pe) {
 		pr_err("Failed to register minidump_vcpu_stack interface\n");
 		return -ENOMEM;
 	}
-	/* #endif */
+#endif
 
 	register_kernel_sections();
-	is_vmap_stack = IS_ENABLED(CONFIG_VMAP_STACK);
 	register_irq_stack();
 /*#ifdef OPLUS_FEATURE_DFR
 #ifdef CONFIG_QCOM_DYN_MINIDUMP_STACK
