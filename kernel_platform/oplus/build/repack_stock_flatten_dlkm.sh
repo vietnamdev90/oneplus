@@ -9,7 +9,7 @@ set -euo pipefail
 TOPDIR=${TOPDIR:?TOPDIR must point at the Android kernel workspace}
 PLATFORM=${1:?missing platform name}
 VARIANT=${2:?missing build variant}
-STOCK_MODULE_ZIP="${TOPDIR}/modules.zip"
+STOCK_MODULE_ZIP="${STOCK_MODULE_ZIP:-${TOPDIR}/modules.zip}"
 
 IMAGE_DIST="${TOPDIR}/kernel_platform/out/msm-kernel-${PLATFORM}-${VARIANT}/dist"
 ANDROID_DIST="${TOPDIR}/out/dist"
@@ -59,15 +59,18 @@ find_source_module() {
     local partition=$1
     local module_name=$2
     local candidate=""
+    
+    # The dist directory is the authoritative output of the current build.
+    # DEVICE_KERNEL_OUT may still contain a partial copy after an interrupted
+    # prepare_vendor.sh run, so only use it as a fallback.
+    candidate=$(find -L "${IMAGE_DIST}" -maxdepth 1 -type f -name "${module_name}" -print -quit)
+    if [[ -z "${candidate}" && "${partition}" == "vendor" &&
 
-    if [[ "${partition}" == "vendor" && -d "${DEVICE_KERNEL_OUT}/vendor_dlkm" ]]; then
+             -d "${DEVICE_KERNEL_OUT}/vendor_dlkm" ]]; then
         candidate=$(find -L "${DEVICE_KERNEL_OUT}/vendor_dlkm" -type f -name "${module_name}" -print -quit)
     fi
     if [[ -z "${candidate}" && -d "${COMMON_MODULES_STAGING}" ]]; then
         candidate=$(find -L "${COMMON_MODULES_STAGING}" -type f -name "${module_name}" -print -quit)
-    fi
-    if [[ -z "${candidate}" ]]; then
-        candidate=$(find -L "${IMAGE_DIST}" -maxdepth 1 -type f -name "${module_name}" -print -quit)
     fi
     printf '%s' "${candidate}"
 }

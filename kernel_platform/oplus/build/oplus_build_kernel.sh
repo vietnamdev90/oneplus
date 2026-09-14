@@ -57,7 +57,8 @@ function repack_vendor_boot_with_merged_dtb() {
     local vendor_boot="${image_dist}/vendor_boot.img"
     local unpack_tool="${TOPDIR}/kernel_platform/tools/mkbootimg/unpack_bootimg.py"
     local mkbootimg_tool="${TOPDIR}/kernel_platform/tools/mkbootimg/mkbootimg.py"
-    local avbtool="${TOPDIR}/kernel_platform/prebuilts/kernel-build-tools/linux_musl-x86/bin/avbtool"
+    local tools_bin="${TOPDIR}/kernel_platform/prebuilts/kernel-build-tools/linux_musl-x86/bin"
+    local avbtool="${tools_bin}/avbtool"
     local partition_size=$((0x6000000))
     local repack_tmp
     local boot_args
@@ -93,6 +94,37 @@ function repack_vendor_boot_with_merged_dtb() {
     rm -rf -- "${repack_tmp}"
 }
 
+function patch_stock_super_with_dlkm() {
+    # Set PATCH_STOCK_SUPER=1 to enable, or override STOCK_SUPER,
+    # PATCHED_SUPER_OUTPUT, and STOCK_SUPER_SLOT (auto/a/b/all) as needed.
+    local output_name="msm-kernel-${variants_platform}-${variants_type}"
+    local image_dist="${TOPDIR}/kernel_platform/out/${output_name}/dist"
+    local stock_super="${STOCK_SUPER:-${TOPDIR}/super.img}"
+    local output_super="${PATCHED_SUPER_OUTPUT:-${image_dist}/super_stock_patched.img}"
+    local patch_tool="${TOPDIR}/kernel_platform/oplus/build/patch_stock_super.py"
+    local tools_bin="${TOPDIR}/kernel_platform/prebuilts/kernel-build-tools/linux_musl-x86/bin"
+    local avbtool="${tools_bin}/avbtool"
+
+
+    if [[ "${PATCH_STOCK_SUPER:-0}" != "1" ]]; then
+        echo "Skipping stock super patch (set PATCH_STOCK_SUPER=1 to enable)"
+        return 0
+    fi
+    if [[ ! -f "${stock_super}" ]]; then
+        echo "ERROR: stock super image not found: ${stock_super}" >&2
+        echo "Set STOCK_SUPER=/absolute/path/to/super.img or omit PATCH_STOCK_SUPER=1." >&2
+        return 1
+    fi
+
+    python3 "${patch_tool}" \
+        --stock-super "${stock_super}" \
+        --output "${output_super}" \
+        --system-dlkm "${image_dist}/system_dlkm.img" \
+        --vendor-dlkm "${image_dist}/vendor_dlkm.img" \
+        --avbtool "${avbtool}" \
+        --slot "${STOCK_SUPER_SLOT:-auto}"
+}
+
 function build_kernel_cmd() {
     build_start_time
 
@@ -110,17 +142,17 @@ function build_kernel_cmd() {
          STOCK_MODULE_ZIP="${STOCK_MODULE_ZIP:-${TOPDIR}/modules.zip}" \
         "${TOPDIR}/kernel_platform/oplus/build/repack_stock_flatten_vendor_boot.sh" \
         "${variants_platform}" "${variants_type}" || return 1
-    TOTOPDIR="${TOPDIR}" \
+    TOPDIR="${TOPDIR}" \
         STOCK_MODULE_ZIP="${STOCK_MODULE_ZIP:-${TOPDIR}/modules.zip}" \
         STOCK_SYSTEM_DLKM="${STOCK_SYSTEM_DLKM:-${TOPDIR}/system_dlkm.img}" \
         STOCK_VENDOR_DLKM="${STOCK_VENDOR_DLKM:-${TOPDIR}/vendor_dlkm.img}" \
         "${TOPDIR}/kernel_platform/oplus/build/repack_stock_flatten_dlkm.sh" \
         "${variants_platform}" "${variants_type}" || return 1
         
-        # Keep one canonical image per partition. Kleaf may also emit filesystem-
-        # suffixed and flattened intermediates; they are not final flash artifacts.
-        local dist_dir duplicate
-        for dist_dir in \
+    # Keep one canonical image per partition. Kleaf may also emit filesystem-
+    # suffixed and flattened intermediates; they are not final flash artifacts.
+    local dist_dir duplicate
+    for dist_dir in \
         "${TOPDIR}/kernel_platform/out/msm-kernel-${variants_platform}-${variants_type}/dist" \
         "${TOPDIR}/out/dist"; do
         [[ -d "${dist_dir}" ]] || continue
@@ -132,6 +164,7 @@ function build_kernel_cmd() {
             rm -f -- "${dist_dir}/${duplicate}"
         done
     done
+    patch_stock_super_with_dlkm || return 1
     build_end_time
 }
 

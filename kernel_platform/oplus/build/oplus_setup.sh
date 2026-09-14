@@ -41,6 +41,7 @@ function init_build_environment() {
     export JAVA_HOME=${TOPDIR}/prebuilts/jdk/jdk21/linux-x86
     mkdir -p ${IMAGE_OUT}
     mkdir -p ${TOPDIR}/LOGDIR
+    mkdir -p ${ANDROID_PRODUCT_OUT}
 }
 
 function print_module_help ()

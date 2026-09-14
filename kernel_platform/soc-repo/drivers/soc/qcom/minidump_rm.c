@@ -83,7 +83,7 @@ static void md_rm_update_work(struct md_region *entry)
 	if (slot_num < 0) {
 		printk_deferred(
 			"Update region:[%s] failed:%d unable to register\n",
-			entry->name, ret);
+			entry->name, slot_num);
 		return;
 	}
 
@@ -93,7 +93,8 @@ static void md_rm_update_work(struct md_region *entry)
 		printk_deferred(
 			"Update entry:%s failed, minidump table is corrupt\n",
 			entry->name);
-		md_rm_update_elf_header(entryno, entry);
+	} else {
+		md_rm_update_elf_header(entryno - 3, entry);
 	}
 	spin_unlock_irqrestore(&mdt_lock, flags);
 }
@@ -187,6 +188,8 @@ static int md_rm_update(int regno, const struct md_region *entry)
 				entry->name);
 		return entryno;
 	}
+	if (entryno - 3 != regno)
+		return -EINVAL;
 	rm_work = kzalloc(sizeof(*rm_work), GFP_ATOMIC);
 	if (!rm_work)
 		return -ENOMEM;
@@ -330,9 +333,9 @@ static int md_rm_add_md_region(const struct md_region *entry)
 		goto out;
 	}
 	ret = md_rm_add_region(entry);
-	md_add_elf_header(entry);
 	if (ret)
 		goto out;
+	md_add_elf_header(entry);
 
 	ret = md_num_regions;
 	md_num_regions++;
@@ -348,11 +351,13 @@ static int md_rm_update_region(int regno, const struct md_region *entry)
 	int ret = 0;
 	unsigned long flags;
 
-	read_lock_irqsave(&mdt_remove_lock, flags);
+	spin_lock_irqsave(&mdt_lock, flags);
+	read_lock(&mdt_remove_lock);
 
 	ret = md_rm_update(regno, entry);
 
-	read_unlock_irqrestore(&mdt_remove_lock, flags);
+	read_unlock(&mdt_remove_lock);
+	spin_unlock_irqrestore(&mdt_lock, flags);
 
 	return ret;
 }
@@ -393,8 +398,8 @@ static struct md_region md_rm_get_region(char *name)
 				if (shdr->sh_addr == phdr->p_vaddr) {
 					strscpy(tmp.name, hdr_name,
 						sizeof(tmp.name));
-					tmp.phys_addr = phdr->p_vaddr;
-					tmp.virt_addr = phdr->p_paddr;
+					tmp.phys_addr = phdr->p_paddr;
+					tmp.virt_addr = phdr->p_vaddr;
 					tmp.size = phdr->p_filesz;
 					goto out;
 				}

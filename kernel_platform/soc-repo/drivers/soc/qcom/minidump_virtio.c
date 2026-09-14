@@ -54,6 +54,8 @@ DEFINE_SPINLOCK(mdt_lock);
 /* Set as globle variable */
 static struct virtio_minidump *vmd;
 
+static struct md_region md_virtio_get_region(char *name);
+
 static int virtio_add_region(const struct md_region *entry)
 {
 	struct virtio_minidump_msg *req, *rsp;
@@ -77,6 +79,7 @@ static int virtio_add_region(const struct md_region *entry)
 	sg_init_one(sg, req, sizeof(*req));
 
 	mutex_lock(&vmd->lock);
+	reinit_completion(&vmd->rsp_avail);
 
 	ret = virtqueue_add_outbuf(vmd->vq, sg, 1, req, GFP_KERNEL);
 	if (ret) {
@@ -91,9 +94,10 @@ static int virtio_add_region(const struct md_region *entry)
 	rsp = virtqueue_get_buf(vmd->vq, &len);
 	if (!rsp) {
 		pr_err("%s: fail to get virtqueue buffer\n", entry->name);
+		ret = -EIO;
 		goto out;
 	}
-
+	
 	ret = virtio32_to_cpu(vmd->vdev, rsp->result);
 
 out:
@@ -121,6 +125,7 @@ static int virtio_remove_region(const struct md_region *entry)
 	sg_init_one(sg, req, sizeof(*req));
 
 	mutex_lock(&vmd->lock);
+	reinit_completion(&vmd->rsp_avail);
 
 	ret = virtqueue_add_outbuf(vmd->vq, sg, 1, req, GFP_KERNEL);
 	if (ret) {
@@ -135,6 +140,7 @@ static int virtio_remove_region(const struct md_region *entry)
 	rsp = virtqueue_get_buf(vmd->vq, &len);
 	if (!rsp) {
 		pr_err("%s: fail to get virtqueue buffer\n", entry->name);
+		ret = -EIO;
 		goto out;
 	}
 
@@ -167,6 +173,7 @@ static int virtio_update_region(const struct md_region *entry)
 	sg_init_one(sg, req, sizeof(*req));
 
 	mutex_lock(&vmd->lock);
+	reinit_completion(&vmd->rsp_avail);
 
 	ret = virtqueue_add_outbuf(vmd->vq, sg, 1, req, GFP_KERNEL);
 	if (ret) {
@@ -181,10 +188,11 @@ static int virtio_update_region(const struct md_region *entry)
 	rsp = virtqueue_get_buf(vmd->vq, &len);
 	if (!rsp) {
 		pr_err("%s: fail to get virtqueue buffer\n", entry->name);
+		ret = -EIO;
 		goto out;
 	}
 
-	ret = virtio32_to_cpu(vmd->vdev, rsp->result);
+        ret = virtio32_to_cpu(vmd->vdev, rsp->result);
 
 out:
 	mutex_unlock(&vmd->lock);
@@ -220,10 +228,13 @@ static int md_virtio_add_pending_entry(struct list_head *pending_list)
 {
 	struct md_pending_region *pending_region, *tmp;
 	unsigned long flags;
+	int ret;
 
 	/* Add pending entries to HLOS TOC */
 	list_for_each_entry_safe(pending_region, tmp, pending_list, list) {
-		virtio_add_region(&pending_region->entry);
+		ret = virtio_add_region(&pending_region->entry);
+		if (ret)
+			return ret;
 
 		spin_lock_irqsave(&mdt_lock, flags);
 		md_add_elf_header(&pending_region->entry);
@@ -272,7 +283,12 @@ static int md_virtio_remove_region(const struct md_region *entry)
 
 	spin_lock_irqsave(&mdt_lock, flags);
 	write_lock(&mdt_remove_lock);
-	msm_minidump_clear_headers(entry);
+	ret = msm_minidump_clear_headers(entry);
+	if (ret) {
+		write_unlock(&mdt_remove_lock);
+		spin_unlock_irqrestore(&mdt_lock, flags);
+		return ret;
+	}
 	md_num_regions--;
 	write_unlock(&mdt_remove_lock);
 	spin_unlock_irqrestore(&mdt_lock, flags);
@@ -284,6 +300,17 @@ static int md_virtio_add_region(const struct md_region *entry)
 {
 	int ret;
 	unsigned long flags;
+	struct md_region existing;
+
+	spin_lock_irqsave(&mdt_lock, flags);
+	if (md_num_regions >= MAX_NUM_ENTRIES) {
+		spin_unlock_irqrestore(&mdt_lock, flags);
+		return -ENOMEM;
+	}
+	existing = md_virtio_get_region((char *)entry->name);
+	spin_unlock_irqrestore(&mdt_lock, flags);
+	if (existing.name[0])
+		return -EEXIST;
 
 	ret = virtio_add_region(entry);
 	if (ret)
@@ -319,9 +346,11 @@ static int md_virtio_update_region(int regno, const struct md_region *entry)
 	if (ret)
 		return -EBUSY;
 
-	read_lock_irqsave(&mdt_remove_lock, flags);
+	spin_lock_irqsave(&mdt_lock, flags);
+	read_lock(&mdt_remove_lock);
 	md_virtio_update_elf_header(regno, entry);
-	read_unlock_irqrestore(&mdt_remove_lock, flags);
+	read_unlock(&mdt_remove_lock);
+	spin_unlock_irqrestore(&mdt_lock, flags);
 
 	return ret;
 }
@@ -361,8 +390,8 @@ static struct md_region md_virtio_get_region(char *name)
 				if (shdr->sh_addr == phdr->p_vaddr) {
 					strscpy(tmp.name, hdr_name,
 						sizeof(tmp.name));
-					tmp.phys_addr = phdr->p_vaddr;
-					tmp.virt_addr = phdr->p_paddr;
+					tmp.phys_addr = phdr->p_paddr;
+					tmp.virt_addr = phdr->p_vaddr;
 					tmp.size = phdr->p_filesz;
 					goto out;
 				}
@@ -462,6 +491,8 @@ static void minidump_virtio_driver_remove(struct virtio_device *vdev)
 	while ((buf = virtqueue_detach_unused_buf(vmd->vq)) != NULL)
 		kfree(buf);
 	vdev->config->del_vqs(vdev);
+	vdev->priv = NULL;
+	vmd = NULL;
 }
 
 static const struct virtio_device_id id_table[] = {
