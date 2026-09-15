@@ -26,6 +26,42 @@ def require(path, executable=False):
         raise ValueError(f"Missing {'executable' if executable else 'file'}: {path}")
 
 
+def prepare_oplus_bazel_package(kp):
+    """Expose OEM rules at the package label used by the checked-in .bzl files."""
+    source = kp / "oplus/bazel"
+    package = kp / "build/kernel/oplus"
+    rules = ("BUILD.bazel", "oplus_modules.bzl", "oplus_modules_define.bzl",
+             "oplus_modules_dist.bzl")
+    # Validate the source first; do not create another dangling package link.
+    require(kp / "build/kernel/BUILD.bazel")
+    for name in rules:
+        require(source / name)
+    if package.is_symlink() and package.resolve() != source.resolve():
+        # Only replace the alias itself; never remove its former target.
+        package.unlink()
+    if not package.exists():
+        package.symlink_to(os.path.relpath(source, package.parent), target_is_directory=True)
+        print(f"Prepared Bazel package: {package} -> {os.readlink(package)}", flush=True)
+    elif not package.is_dir():
+        raise ValueError(f"Oplus package path is an existing file; left untouched: {package}")
+    # Preserve an existing real package directory, including local rule changes.
+    for name in rules:
+        require(package / name)
+    return package
+
+
+def prepare_oplus_variant(kp, package):
+    """Check the generated config and update it in a copied package, if present."""
+    source = kp / "oplus/bazel/oplus_modules_variant.bzl"
+    destination = package / source.name
+    require(source)
+    if destination.resolve() != source.resolve():
+        if destination.is_symlink():
+            raise ValueError(f"Unexpected generated config symlink; left untouched: {destination}")
+        destination.write_bytes(source.read_bytes())
+    require(destination)
+
+
 def select_targets(output, variant):
     prefix = f"//soc-repo:canoe_{variant}"
     labels = set(output.splitlines())
@@ -71,6 +107,7 @@ def main():
         if not (root / path).is_dir():
             raise ValueError(f"Incomplete kernel source checkout: {path}")
 
+    oplus_package = prepare_oplus_bazel_package(kp)
     source_sha = run(["git", "rev-parse", "HEAD"], root, os.environ, True).stdout.strip()
     version_fields = dict(re.findall(r"^(VERSION|PATCHLEVEL|SUBLEVEL)\s*=\s*(\d+)",
                                     (kp / "common/Makefile").read_text(), re.M))
@@ -116,6 +153,7 @@ def main():
             features = " ".join(f"{k}={v}" for k, v in sorted(env.items())
                                 if k.startswith("OPLUS_FEATURE_BSP_"))
             run(["bash", kp / "oplus/bazel/oplus_modules_variant.sh", "canoe", variant, features], root, env)
+            prepare_oplus_variant(kp, oplus_package)
             query = (f'filter("canoe_{variant}.*_dist$", '
                      'attr(generator_function, define_canoe, soc-repo/...))')
             output = run(command + ["query", "--noshow_progress", query], kp, env, True).stdout
