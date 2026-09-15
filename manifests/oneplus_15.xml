@@ -34,7 +34,7 @@
   <project remote="clo-la" name="kernel_platform/external/toybox" path="kernel_platform/external/toybox" revision="83b68c20ece583bc4548322454b159b7f1e8b45f" upstream="refs/heads/ks-kernel.lnx.5.0.r3-rel" groups="ddk"/>
   <project remote="clo-la" name="kernel_platform/external/zlib" path="kernel_platform/external/zlib" revision="3236d3c9b06373861f36c0e1074cb7e6a59a3eb3" upstream="refs/heads/ks-kernel.lnx.5.0.r3-rel" groups="ddk"/>
   <project remote="clo-la" name="kernel_platform/external/zopfli" path="kernel_platform/external/zopfli" revision="6f21a62d23c536a86a5254cc9a38c8c10c846082" upstream="refs/heads/ks-kernel.lnx.5.0.r3-rel" groups="ddk"/>
-  <project remote="clo-la" name="kernel_platform/prebuilts/asuite" path="kernel_platform/prebuilts/asuite" revision="4d7c778e792fbb56ced787158817ba1f17c68f3e" upstream="refs/heads/ks-kernel.lnx.5.0.r3-rel"/>
+  <project remote="clo-la" name="kernel_platform/prebuilts/asuite" path="kernel_platform/prebuilts/asuite" revision="06972de5c2c8da5a5d135491a515329bbbf5b785" upstream="refs/heads/la/ks-aosp.lnx.16.0.r1-rel"/>
   <project remote="clo-la" name="kernel_platform/prebuilts/build-tools" path="kernel_platform/prebuilts/build-tools" revision="951b0e9b947327fe485b2553faef2ed34f8e148d" upstream="refs/heads/ks-kernel.lnx.5.0.r3-rel" groups="ddk">
     <linkfile dest="kernel_platform/build/prebuilts/build-tools" src="."/>
   </project>
@@ -46,7 +46,7 @@
   <project remote="clo-la" name="kernel_platform/system/libufdt" path="kernel_platform/external/libufdt" revision="9b70f594cf149c7c73989c78f03d210f8aa1c1f6" upstream="refs/heads/ks-kernel.lnx.5.0.r3-rel"/>
   <project remote="clo-la" name="kernel_platform/system/tools/mkbootimg" path="kernel_platform/tools/mkbootimg" revision="3884b85673aef00c389ad63548bd5752a7d26bc2" upstream="refs/heads/ks-kernel.lnx.5.0.r3-rel"/>
   <project remote="clo-la" name="kernel_platform/toolchain/prebuilts/ndk/r26" path="kernel_platform/prebuilts/ndk-r26" revision="e535051ebc04204cec44bde38f62385d63180388" upstream="refs/heads/ks-kernel.lnx.5.0.r3-rel" groups="ddk"/>
-  <project remote="clo-la" name="kernel_platform/tools/tradefederation/prebuilts" path="kernel_platform/prebuilts/tradefed" revision="a83f36883e31fd4114c0aa42e39a98ae6636d092" upstream="refs/heads/ks-kernel.lnx.5.0.r3-rel"/>
+  <project remote="clo-la" name="kernel_platform/tools/tradefederation/prebuilts" path="kernel_platform/prebuilts/tradefed" revision="59b5ece61b3cd49c3ecf312461913d257feaec42" upstream="refs/heads/la/ks-aosp.lnx.16.0.r1-rel"/>
   <project remote="clo-la" name="kernelplatform/prebuilts-master/clang/host/linux-x86" path="kernel_platform/prebuilts/clang/host/linux-x86" revision="e6e84a60b1b4b68ee7de5a66fa63fc95fe9fe131" upstream="refs/heads/ks-kernel.lnx.5.0.r3-rel" groups="ddk"/>
   <project remote="clo-la" name="kernelplatform/prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8" path="kernel_platform/prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8" revision="92f8fa6897cf88a2fe857287682a089e9b53dca5" upstream="refs/heads/ks-kernel.lnx.5.0.r3-rel" groups="ddk">
     <linkfile dest="kernel_platform/build/build-tools/sysroot" src="sysroot"/>
