@@ -1,0 +1,157 @@
+name: Build OnePlus 15 kernel from release tools
+
+on:
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: Kernel variant
+        type: choice
+        options: [perf, consolidate]
+        default: perf
+      runner:
+        description: Ubuntu 24.04 x86_64 runner label
+        type: string
+        default: ubuntu-24.04
+      jobs:
+        description: Parallel Bazel jobs (1-64)
+        type: string
+        default: '4'
+      cache_repository:
+        description: Repository holding toolchain-cache (empty means this repository)
+        type: string
+        default: ''
+      publish_release:
+        description: Also publish the compiled output to a new kernel release
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: oneplus15-build-${{ github.ref }}-${{ inputs.variant }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  PYTHONUNBUFFERED: '1'
+  CACHE_TAG: toolchain-cache
+
+jobs:
+  build:
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: 350
+    steps:
+      - name: Free hosted runner disk
+        if: runner.environment == 'github-hosted'
+        run: |
+          set -euo pipefail
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h .
+      - name: Checkout selected source branch
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Install host packages
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential bc bison flex libssl-dev libelf-dev libncurses-dev \
+            libxml2-utils zlib1g-dev cpio rsync zip unzip lz4 zstd pigz \
+            python3 python-is-python3 git git-lfs gh ca-certificates device-tree-compiler
+          python3 -c 'import sys; assert sys.version_info >= (3, 12), "Python 3.12+ required"'
+      - name: Restore verified release cache
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CACHE_REPOSITORY: ${{ inputs.cache_repository || github.repository }}
+        run: |
+          set -euo pipefail
+          mkdir -p logs
+          python3 scripts/ci/toolchain_cache.py restore \
+            --repo "$CACHE_REPOSITORY" --tag "$CACHE_TAG" \
+            --manifest manifests/oneplus_15.xml 2>&1 | tee logs/restore.log
+          df -h .
+      - name: Build canoe kernel and modules
+        env:
+          VARIANT: ${{ inputs.variant }}
+          BUILD_JOBS: ${{ inputs.jobs }}
+        run: |
+          set -euo pipefail
+          python3 scripts/ci/build_kernel.py --variant "$VARIANT" --jobs "$BUILD_JOBS" \
+            2>&1 | tee logs/build.log
+      - name: Package kernel output with provenance and checksums
+        env:
+          VARIANT: ${{ inputs.variant }}
+        run: |
+          set -euo pipefail
+          DIST="kernel_platform/out/msm-kernel-canoe-${VARIANT}/dist"
+          test -s "$DIST/Image"
+          mkdir -p artifacts
+          cp "logs/build-${VARIANT}.json" artifacts/build-info.json
+          cp .ci-cache/restore-report.json artifacts/toolchain-restore.json
+          cp manifests/oneplus_15.xml artifacts/oneplus_15.xml
+          # Keep paths and modes inside tar; artifact ZIP does not preserve executable bits.
+          OUTPUTS=("kernel_platform/out/msm-kernel-canoe-${VARIANT}")
+          if [ -d device/qcom/canoe-kernel/oplus_ddk ]; then
+            OUTPUTS+=(device/qcom/canoe-kernel/oplus_ddk)
+          fi
+          tar -I 'pigz -p 2 -6' -cf "$RUNNER_TEMP/oneplus15-kernel.tar.gz" "${OUTPUTS[@]}"
+          # Parts also fit the GitHub Release per-asset limit when publishing is enabled.
+          split -b 1500M -d -a 3 "$RUNNER_TEMP/oneplus15-kernel.tar.gz" \
+            artifacts/oneplus15-kernel.tar.gz.part-
+          rm "$RUNNER_TEMP/oneplus15-kernel.tar.gz"
+          (cd artifacts && sha256sum ./*.part-* ./*.json ./*.xml > SHA256SUMS)
+          echo "Kernel build finished: canoe/${VARIANT}. Download the kernel artifact below." >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload compiled kernel
+        uses: actions/upload-artifact@v4
+        with:
+          name: oneplus15-kernel-${{ inputs.variant }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts/
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload logs even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: oneplus15-build-logs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            logs/
+            .ci-cache/restore-report.json
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 14
+
+  publish:
+    if: inputs.publish_release
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: oneplus15-kernel-${{ inputs.variant }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts
+      - name: Publish compiled outputs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VARIANT: ${{ inputs.variant }}
+        run: |
+          set -euo pipefail
+          (cd artifacts && sha256sum -c SHA256SUMS)
+          TAG="kernel-oneplus15-${VARIANT}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          cat > "$RUNNER_TEMP/release-notes.md" <<'NOTES'
+          Kernel and modules compiled from this repository using verified release tools.
+          Verify SHA256SUMS, concatenate all numbered parts in order, then extract the tar.gz.
+          These are build outputs. Stock ROM repacking and device boot testing are separate steps.
+          Source commit and toolchain provenance are included in the JSON files.
+          NOTES
+          gh release create "$TAG" artifacts/* --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" --latest=false \
+            --title "OnePlus 15 ${VARIANT} kernel" --notes-file "$RUNNER_TEMP/release-notes.md"

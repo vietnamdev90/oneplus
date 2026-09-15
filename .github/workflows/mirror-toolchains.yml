@@ -1,0 +1,132 @@
+name: Mirror OnePlus 15 build tools
+
+on:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: oneplus15-toolchain-cache
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CACHE_TAG: toolchain-cache
+  MANIFEST: manifests/oneplus_15.xml
+  PYTHONUNBUFFERED: '1'
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            scripts/ci
+            manifests
+      - id: plan
+        name: Resolve all manifest dependencies and ensure release exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 scripts/ci/toolchain_cache.py plan --manifest "$MANIFEST" --tag "$CACHE_TAG"
+
+  mirror:
+    needs: plan
+    name: Mirror ${{ matrix.path }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            scripts/ci
+            manifests
+      - name: Install download and compression tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends git-lfs pigz
+      - name: Fetch exact commit, materialize LFS, split and upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PROJECT_ID: ${{ matrix.id }}
+        run: |
+          set -euo pipefail
+          python3 scripts/ci/toolchain_cache.py mirror \
+            --manifest "$MANIFEST" --tag "$CACHE_TAG" --project-id "$PROJECT_ID"
+
+  complete:
+    name: Cache Bazel dependencies and publish ready index
+    needs: mirror
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    steps:
+      - name: Free hosted runner disk
+        run: |
+          set -euo pipefail
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h .
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Install host packages
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential bc bison flex libssl-dev libelf-dev libncurses-dev \
+            libxml2-utils zlib1g-dev cpio rsync zip unzip lz4 zstd pigz \
+            python3 python-is-python3 git git-lfs gh ca-certificates device-tree-compiler
+      - name: Validate every component and restore bootstrap tools
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 scripts/ci/toolchain_cache.py index --manifest "$MANIFEST" --tag "$CACHE_TAG"
+          python3 scripts/ci/toolchain_cache.py restore --manifest "$MANIFEST" \
+            --tag "$CACHE_TAG" --index .ci-cache/bootstrap-index.json
+      - name: Warm perf and consolidate Bazel dependencies
+        run: |
+          set -euo pipefail
+          mkdir -p logs
+          python3 scripts/ci/build_kernel.py --warm --jobs 4 2>&1 | tee logs/bazel-warm.log
+      - name: Publish complete cache index last
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 scripts/ci/toolchain_cache.py publish --manifest "$MANIFEST" --tag "$CACHE_TAG"
+          echo 'All 30 manifest dependencies and both Bazel variants are cached.' >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload diagnostic logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: toolchain-mirror-logs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            logs/
+            .ci-cache/restore-report.json
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 14
